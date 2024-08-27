@@ -150,20 +150,29 @@ impl<const W: usize> Equation<W> {
     }
 }
 
-/// A struct that implements AsEquation can be hashed into an equation.
+/// A struct that implements Filterable can be hashed into an equation or
+/// stored in a secondary retrieval mechanism.
 /// TODO: document choice of W.
-pub trait AsEquation<const W: usize> {
+pub trait Filterable<const W: usize> {
     /// A good implementation of as_equation will produce equations { s, a, b } such that
     ///     (1) s is uniform in {0, 1, ..., m-1},
     ///     (2) a satisfies the alignment requirement (a\[0\] & 1 == 1) but is otherwise uniformly random,
     ///     (3) b is zero if and only if the item should be in the filter, and b = 1 otherwise.
     /// TODO: refactor to allow b to be set during insertion.
     fn as_equation(&self, m: usize) -> Equation<W>;
+
+    /// A unique identifier for this item. If this item cannot be inserted into the linear system,
+    /// then we will store it its `included()` status in a secondary retrieval mechanism keyed by
+    /// `discriminant()`.
+    fn discriminant(&self) -> &[u8];
+
+    /// Whether this item should be included in an exact filter.
+    fn included(&self) -> bool;
 }
 
 /// A RibbonBuilder collects a set of items for insertion into a Ribbon. If the optional filter is
 /// provided, then only items that are contained in the filter will be inserted.
-pub struct RibbonBuilder<'a, const W: usize, T: AsEquation<W> + Discriminant> {
+pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
     /// block id.
     pub id: Vec<u8>, /* TODO: maybe make this an argument to build_approximate and build_exact */
     /// items to be inserted.
@@ -172,7 +181,7 @@ pub struct RibbonBuilder<'a, const W: usize, T: AsEquation<W> + Discriminant> {
     pub filter: Option<&'a RibbonFilter<W, T>>,
 }
 
-impl<'a, const W: usize, T: AsEquation<W> + Discriminant> fmt::Display for RibbonBuilder<'a, W, T> {
+impl<'a, const W: usize, T: Filterable<W>> fmt::Display for RibbonBuilder<'a, W, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -184,7 +193,7 @@ impl<'a, const W: usize, T: AsEquation<W> + Discriminant> fmt::Display for Ribbo
     }
 }
 
-impl<'a, const W: usize, T: AsEquation<W> + Discriminant> RibbonBuilder<'a, W, T> {
+impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     pub fn new(
         id: &impl AsRef<[u8]>,
         filter: Option<&'a RibbonFilter<W, T>>,
@@ -227,7 +236,7 @@ impl<'a, const W: usize, T: AsEquation<W> + Discriminant> RibbonBuilder<'a, W, T
                 out.insert(item);
             }
             // Insertions should not fail for a homogeneous system.
-            assert!(out.errors.len() == 0);
+            assert!(out.errors.is_empty());
             out
         }
     }
@@ -253,7 +262,7 @@ impl<'a, const W: usize, T: AsEquation<W> + Discriminant> RibbonBuilder<'a, W, T
 }
 
 /// A compact representation of a linear system AX = B
-pub struct Ribbon<const W: usize, T: AsEquation<W>> {
+pub struct Ribbon<const W: usize, T: Filterable<W>> {
     /// A block identifier. Used to build an index for partitioned filters.
     id: Vec<u8>,
     /// The overhead.
@@ -268,7 +277,7 @@ pub struct Ribbon<const W: usize, T: AsEquation<W>> {
     errors: Vec<T>,
 }
 
-impl<const W: usize, T: AsEquation<W>> fmt::Display for Ribbon<W, T> {
+impl<const W: usize, T: Filterable<W>> fmt::Display for Ribbon<W, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
             "ribbon({:?}): m: {}, rows: {}, rank: {}, errors: {}, epsilon: {}, overhead {}",
@@ -283,7 +292,7 @@ impl<const W: usize, T: AsEquation<W>> fmt::Display for Ribbon<W, T> {
     }
 }
 
-impl<const W: usize, T: AsEquation<W>> Ribbon<W, T> {
+impl<const W: usize, T: Filterable<W>> Ribbon<W, T> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
     pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize) -> Self {
@@ -397,11 +406,11 @@ impl<const W: usize, T: AsEquation<W>> Ribbon<W, T> {
 
 /// Helper struct for building block systems. Don't construct this
 /// directly, just do `RibbonFilter::from(vec![r1, r2, r3]);`
-pub struct FilterBuilder<const W: usize, T: AsEquation<W> + Discriminant> {
+pub struct FilterBuilder<const W: usize, T: Filterable<W>> {
     blocks: Vec<Ribbon<W, T>>,
 }
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> FilterBuilder<W, T> {
+impl<const W: usize, T: Filterable<W>> FilterBuilder<W, T> {
     /// Sort ribbons by descending rank (descending simplifies indexing).
     fn sort(&mut self) {
         self.blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
@@ -488,20 +497,20 @@ type FilterIndex = BTreeMap<
 >;
 
 /// A solution to a ribbon system, along with metadata necessary for querying it.
-pub struct RibbonFilter<const W: usize, T: AsEquation<W> + Discriminant> {
+pub struct RibbonFilter<const W: usize, T: Filterable<W>> {
     index: FilterIndex,
     solution: Vec<Vec<u64>>,
     phantom: std::marker::PhantomData<T>,
 }
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> fmt::Display for RibbonFilter<W, T> {
+impl<const W: usize, T: Filterable<W>> fmt::Display for RibbonFilter<W, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "RibbonFilter({:?})", self.index)
     }
 }
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> RibbonFilter<W, T> {
-    // TODO: This should probably take an &impl AsEquation. It would be nice
+impl<const W: usize, T: Filterable<W>> RibbonFilter<W, T> {
+    // TODO: This should probably take an &impl Filterable. It would be nice
     // to have different structs for items at build time and at query time
     // (we have membership labels at build time, which this function doesn't
     // depend on).
@@ -558,7 +567,7 @@ impl<const W: usize, T: AsEquation<W> + Discriminant> RibbonFilter<W, T> {
     }
 }
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> From<Vec<Ribbon<W, T>>> for RibbonFilter<W, T> {
+impl<const W: usize, T: Filterable<W>> From<Vec<Ribbon<W, T>>> for RibbonFilter<W, T> {
     fn from(blocks: Vec<Ribbon<W, T>>) -> RibbonFilter<W, T> {
         FilterBuilder { blocks }.finalize()
     }
@@ -575,7 +584,7 @@ type PreFilter = BTreeMap<
 ///     + a "prefilter" that handles exceptions...
 /// TODO: Merge the three BTreeMaps.
 /// TODO: Serialization!
-pub struct Clubcard<const W: usize, T: AsEquation<W> + Discriminant> {
+pub struct Clubcard<const W: usize, T: Filterable<W>> {
     /// A (typically small) collection of items that are not encoded in the main filter.
     /// Pulling these items aside lets us avoid repeating the filter construction process
     /// in the event that the linear system for the exact filter is inconsistent.
@@ -588,7 +597,7 @@ pub struct Clubcard<const W: usize, T: AsEquation<W> + Discriminant> {
     exact_filter: Option<RibbonFilter<W, T>>,
 }
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> Default for Clubcard<W, T> {
+impl<const W: usize, T: Filterable<W>> Default for Clubcard<W, T> {
     fn default() -> Self {
         Clubcard {
             pre_filter: Default::default(),
@@ -599,7 +608,7 @@ impl<const W: usize, T: AsEquation<W> + Discriminant> Default for Clubcard<W, T>
 }
 
 
-impl<const W: usize, T: AsEquation<W> + Discriminant> Clubcard<W, T> {
+impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
     pub fn new() -> Clubcard<W, T> {
         Clubcard::default()
     }
@@ -649,11 +658,6 @@ impl<const W: usize, T: AsEquation<W> + Discriminant> Clubcard<W, T> {
     }
 }
 
-pub trait Discriminant {
-    fn discriminant(&self) -> &[u8];
-    fn included(&self) -> bool;
-}
-
 //XXX: move this to rust-create-cascade
 //TODO: can we avoid copying members?
 #[derive(Clone, Debug)]
@@ -668,7 +672,7 @@ pub struct CRLiteKey(
     pub bool,
 );
 
-impl AsEquation<4> for CRLiteKey {
+impl Filterable<4> for CRLiteKey {
     fn as_equation(&self, m: usize) -> Equation<4> {
         let mut hasher = Sha256::new();
         hasher.update(self.0);
@@ -689,14 +693,11 @@ impl AsEquation<4> for CRLiteKey {
         let b = if self.3 { 0 } else { 1 };
         Equation { s, a, b }
     }
-}
 
-/// XXX This is a ridiculous name
-/// XXX Putting `included` here is a kludge.
-impl Discriminant for CRLiteKey {
     fn discriminant(&self) -> &[u8] {
         &self.2
     }
+
     fn included(&self) -> bool {
         self.3
     }
@@ -707,13 +708,11 @@ mod tests {
     use super::*;
     use rand::distributions::Uniform;
 
-    impl<const W: usize> AsEquation<W> for Equation<W> {
+    impl<const W: usize> Filterable<W> for Equation<W> {
         fn as_equation(&self, _m: usize) -> Equation<W> {
             self.clone()
         }
-    }
 
-    impl<const W: usize> Discriminant for Equation<W> {
         fn discriminant(&self) -> &[u8] {
             unsafe { std::mem::transmute(&self.a[..]) }
         }
