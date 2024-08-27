@@ -1,0 +1,971 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+//! **UNSTABLE / EXPERIMENTAL**
+//!
+//! Clubcard is a compact data-structure that solves the exact membership query problem.
+//!
+//! Given some universe of objects U, a subset R of U, and two hash functions defined on U (as
+//! described below), Clubcard outputs a compact encoding of the function `f : U -> {0, 1}` defined
+//! by `f(x) = 0 if and only if x ∈ R`.
+//!
+//! Clubcard is based on the Ribbon filters from
+//! - <https://arxiv.org/pdf/2103.02515>, and
+//! - <https://arxiv.org/pdf/2109.01892>
+//!
+//! And some ideas from Mike Hamburg's RWC 2022 talk
+//! - <https://rwc.iacr.org/2022/program.php#abstract-talk-39>
+//! - <https://youtu.be/Htms5rNy7B8?list=PLeeS-3Ml-rpovBDh6do693We_CP3KTnHU&t=2357>
+//!
+//! The construction will be described in detail in a forthcoming paper.
+//!
+//! At a high level, a clubcard is a pair of GF(2) matrices (X, Y). The two hash functions
+//! (h and g) map elements of U to vectors in the domain of X and Y respectively.
+//!
+//! The matrix X is a solution to `A * X = 0` where the rows of A are obtained by hashing the
+//! elements of R with h. The number of columns in X is ~ log(|U\R| / |R|).
+//!
+//! The matrix Y is a solution to `B * Y = C` where the rows of B are obtained by hashing, with g,
+//! the elements u ∈ U for which h(u) * X = 0. The matrix Y has one column. The rows of C encode
+//! membership in R.
+//!
+//! Given a partition P of the set U, this library will construct the matrices A and B such that
+//! they are (essentially) block diagonal with blocks indexed by p in P. The blocks are sorted by
+//! rank := log(|U_p \ R_p| / |R_p|). The key observation is that we do not need to encode the
+//! columns of X beyond the rank'th position in each block, as we are free to set these columns
+//! equal to 0.
+//!
+//! Clubcard was developed to replace the use of Bloom cascades in CRLite. In a preliminary
+//! experiment using a real-world collection of 12.2M revoked certs and 789.2M non-revoked certs,
+//! the currently-deployed Bloom cascade implementation of CRLite produces a 19.8MB filter in 293
+//! seconds (on a Ryzen 3975WX with 64GB of RAM). This Clubcard implementation produces a 9.2MB
+//! filter in 190 seconds.
+//!
+//#![warn(missing_docs)]
+
+use rand::{distributions::Distribution, thread_rng, Rng};
+
+use sha2::{Digest, Sha256};
+use std::cmp::{max, min};
+use std::collections::BTreeMap;
+use std::fmt;
+
+/// An Equation\<W\> is a representation of a GF(2) linear functional
+///     a(x) = b + sum_i a_i x_i
+/// where a_i is equal to zero except for i in a block of 64*W coefficients
+/// starting at i=s. We say an Equation is /aligned/ if a_s = 1.
+/// (Note: a_i above denotes the i-th bit, not the i'th 64-bit limb.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Equation<const W: usize> {
+    s: usize,    // the row number
+    a: [u64; W], // the non-trivial columns
+    b: u8,       // the constant term
+                 // TODO? save some space by using one bit of s for b.
+}
+
+impl<const W: usize> Equation<W> {
+    /// Construct the equation a(x) = 0.
+    pub fn zero() -> Self {
+        Equation {
+            s: 0,
+            a: [0u64; W],
+            b: 0,
+        }
+    }
+
+    /// Construct the equation a(x) = x_i
+    pub fn std(i: usize) -> Self {
+        let mut a = [0u64; W];
+        a[0] = 1;
+        Equation { s: i, a, b: 0 }
+    }
+
+    /// Construct an random aligned equation using given distribution for s.
+    pub fn rand(s_dist: &impl Distribution<usize>) -> Self {
+        let mut rng = rand::thread_rng();
+        let s = s_dist.sample(&mut rng);
+        let mut a = [0u64; W];
+        for a_i in a.iter_mut() {
+            *a_i = rng.gen();
+        }
+        a[0] |= 1;
+        Equation {
+            s,
+            a,
+            b: rng.gen::<u8>() & 1,
+        }
+    }
+
+    /// Is this a(x) = 1 or a(x) = 0?
+    pub fn is_zero(&self) -> bool { // TODO: is_const? or maybe this gets the point across.
+        self.a == [0u64; W]
+    }
+
+    /// Adds `other` into `self`, i.e. sets self.a ^= other.a and self.b ^= other.b and then aligns
+    /// the result.
+    pub fn add(&mut self, other: &Equation<W>) {
+        assert!(self.s == other.s);
+        // Add the equations in GF(2)
+        for i in 0..W {
+            self.a[i] ^= other.a[i];
+        }
+        self.b ^= other.b;
+        // Exit early if this equation is now zero.
+        if self.is_zero() {
+            return;
+        }
+        // Shift until there is a non-zero bit in the lowest limb.
+        while self.a[0] == 0 {
+            self.a.rotate_left(1);
+        }
+        // Shift first non-zero bit to position 0.
+        let k = self.a[0].trailing_zeros();
+        if k == 0 {
+            return;
+        }
+        for i in 0..W - 1 {
+            self.a[i] >>= k;
+            self.a[i] |= self.a[i + 1] << (64 - k);
+        }
+        self.a[W - 1] >>= k;
+        // Update the starting position
+        self.s += k as usize;
+    }
+
+    /// Computes a(z) = sum a_i z_i.
+    pub fn eval(&self, z: &[u64]) -> u8 {
+        // Compute a(z), noting that this only depends
+        // on 64*W bits of z starting from position s.
+        let limb = self.s / 64;
+        let shift = self.s % 64;
+        let mut r = 0;
+        for i in limb..min(z.len(), limb + W) {
+            let mut tmp = z[i] >> shift;
+            if i + 1 < z.len() && shift != 0 {
+                tmp |= z[i + 1] << (64 - shift);
+            }
+            r ^= tmp & self.a[i - limb];
+        }
+        (r.count_ones() & 1) as u8
+    }
+}
+
+/// A struct that implements AsEquation can be hashed into an equation.
+/// TODO: document choice of W.
+pub trait AsEquation<const W: usize> {
+    /// A good implementation of as_equation will produce equations { s, a, b } such that
+    ///     (1) s is uniform in {0, 1, ..., m-1},
+    ///     (2) a satisfies the alignment requirement (a\[0\] & 1 == 1) but is otherwise uniformly random,
+    ///     (3) b is zero if and only if the item should be in the filter, and b = 1 otherwise.
+    /// TODO: refactor to allow b to be set during insertion.
+    fn as_equation(&self, m: usize) -> Equation<W>;
+}
+
+/// A RibbonBuilder collects a set of items for insertion into a Ribbon. If the optional filter is
+/// provided, then only items that are contained in the filter will be inserted.
+pub struct RibbonBuilder<'a, const W: usize, T: AsEquation<W> + Discriminant> {
+    /// block id.
+    pub id: Vec<u8>, /* TODO: maybe make this an argument to build_approximate and build_exact */
+    /// items to be inserted.
+    pub items: Vec<T>,
+    /// filter for pruning insertions.
+    pub filter: Option<&'a RibbonFilter<W, T>>,
+}
+
+impl<'a, const W: usize, T: AsEquation<W> + Discriminant> fmt::Display for RibbonBuilder<'a, W, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "RibbonBuilder({:?}, {}, {})",
+            self.id,
+            self.items.len(),
+            self.filter.is_some()
+        )
+    }
+}
+
+impl<'a, const W: usize, T: AsEquation<W> + Discriminant> RibbonBuilder<'a, W, T> {
+    pub fn new(
+        id: &impl AsRef<[u8]>,
+        filter: Option<&'a RibbonFilter<W, T>>,
+    ) -> RibbonBuilder<'a, W, T> {
+        RibbonBuilder {
+            id: AsRef::<[u8]>::as_ref(id).to_vec(),
+            items: vec![],
+            filter,
+        }
+    }
+
+    /// Queue `item` for insertion into the ribbon (if it is contained in the provided filter).
+    pub fn insert(&mut self, item: T) {
+        if let Some(filter) = self.filter {
+            if Ok(true) == filter.contains(&self.id, &item) {
+                self.items.push(item);
+            }
+        } else {
+            self.items.push(item);
+        }
+    }
+
+    /// Denote the inserted set by R and the universe by U.
+    /// The ribbon returned by `build_approximate` encodes a function f : U -> {0, 1} where
+    /// f(x) = 0 if and only if x is in R union S where S is a (random) subset of U \ R of size
+    /// ~|R|. In other words, the ribbon solves the approximate membership query problem with a
+    /// false positive rate roughly 2^-r = |R| / (|U| - |R|).
+    /// The size of this ribbon is proportional to r|R|.
+    pub fn build_approximate(self, universe_size: usize) -> Ribbon<W, T> {
+        assert!(self.items.len() <= universe_size);
+        // If the set is very small, we'll just tag each element as an encoding error
+        // so that it gets inserted into a separate retrieval structure later.
+        if self.items.len() < 128 { // XXX Tune this.
+            let mut out = Ribbon::new(&self.id, 0, 0);
+            out.errors = self.items;
+            out
+        } else {
+            let mut out = Ribbon::new(&self.id, self.items.len(), universe_size);
+            for item in self.items {
+                out.insert(item);
+            }
+            // Insertions should not fail for a homogeneous system.
+            assert!(out.errors.len() == 0);
+            out
+        }
+    }
+
+    /// Denote the inserted set by R and the universe by U.
+    /// The ribbon returned by `build_exact` encodes the function "f(x) = 0 iff x in R". The size
+    /// of this ribbon is proportional to |U|. In the typical use case, the set U is the result of
+    /// filtering a larger universe with a false positive rate of 2^-r. This allows for exact
+    /// encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
+    pub fn build_exact(self) -> Ribbon<W, T> {
+        if self.items.len() < 128 { // XXX Tune this, or maybe remove it.
+            let mut out = Ribbon::new(&self.id, 0, 0);
+            out.errors = self.items;
+            out
+        } else {
+            let mut out = Ribbon::new(&self.id, self.items.len(), self.items.len());
+            for item in self.items {
+                out.insert(item);
+            }
+            out
+        }
+    }
+}
+
+/// A compact representation of a linear system AX = B
+pub struct Ribbon<const W: usize, T: AsEquation<W>> {
+    /// A block identifier. Used to build an index for partitioned filters.
+    id: Vec<u8>,
+    /// The overhead.
+    epsilon: f64,
+    /// Equal to (1+epsilon) * |R|
+    m: usize,
+    /// The rank is round(-log2(subset_size / (universe_size - subset_size)))
+    rank: usize,
+    /// A linear system in which each equation has s in {0, ..., m-1}
+    rows: Vec<Equation<W>>,
+    /// A (typically short) list of items that failed insertion
+    errors: Vec<T>,
+}
+
+impl<const W: usize, T: AsEquation<W>> fmt::Display for Ribbon<W, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (i, eq) in self.rows.iter().enumerate() {
+            write!(f, "{} | {:b} | ", i, eq.b)?;
+            write!(f, "{:>offset$}", "", offset = i % 16)?;
+            for j in 0..W {
+                write!(f, "{:b}", eq.a[j].reverse_bits())?;
+            }
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<const W: usize, T: AsEquation<W>> Ribbon<W, T> {
+    /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
+    /// `universe_size`.
+    pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize) -> Self {
+        assert!(subset_size <= universe_size);
+
+        // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
+        let epsilon = 0.08;
+        let m = ((1.0 + epsilon) * (subset_size as f64)).floor() as usize;
+
+        let rank = if subset_size == 0 || 2 * subset_size >= universe_size {
+            0
+        } else {
+            (((universe_size - subset_size) as f64) / (subset_size as f64))
+                .log2()
+                .round() as usize
+        };
+
+        Ribbon {
+            id: AsRef::<[u8]>::as_ref(id).to_vec(),
+            rows: vec![Equation::zero(); m],
+            m,
+            epsilon,
+            rank,
+            errors: vec![],
+        }
+    }
+
+    /// Hash the item to an Equation and insert it into the system.
+    pub fn insert(&mut self, item: T) -> bool {
+        let eq = item.as_equation(self.m);
+        assert!(eq.is_zero() || eq.a[0] & 1 == 1);
+        let rv = self.insert_equation(eq);
+        if !rv {
+            self.errors.push(item)
+        }
+        rv
+    }
+
+    /// Insert an equation into the system using Algorithm 1 from <https://arxiv.org/pdf/2103.02515>
+    pub fn insert_equation(&mut self, mut eq: Equation<W>) -> bool {
+        loop {
+            if eq.is_zero() {
+                return eq.b == 0; /* redundant (b=0) or inconsistent (b!=0) */
+            }
+            if eq.s >= self.rows.len() {
+                // TODO: could be smarter here
+                self.rows.resize_with(eq.s + 1, Equation::zero);
+            }
+            let cur = &mut self.rows[eq.s];
+            if cur.is_zero() {
+                *cur = eq;
+                return true; /* inserted */
+            }
+            eq.add(cur);
+        }
+    }
+
+    /// Solve the system using back-substitution. If this is a block in a larger system, the `tail`
+    /// argument should be set to the the solution vector for the block to the right of this one.
+    pub fn solve(&self, tail: &[u64]) -> Vec<u64> {
+        let mut z = vec![0u64; ((self.rows.len() + 63) / 64) + tail.len()];
+        // insert tail into z starting at bit self.rows.len()
+        let k = self.rows.len() / 64;
+        let p = self.rows.len() % 64;
+        if p == 0 {
+            z[k..(tail.len() + k)].copy_from_slice(tail);
+        } else {
+            for i in 0..tail.len() {
+                z[k + i] |= tail[i] << p;
+                z[k + i + 1] = tail[i] >> (64 - p)
+            }
+        }
+
+        // Solve by back substitution
+        for i in (0..self.rows.len()).rev() {
+            let limb = i / 64;
+            let pos = i % 64;
+            let z_i = if self.rows[i].is_zero() {
+                // Row i has a zero in column i, so we're free to choose.
+                // TODO: We want multiple calls to solve() to give a different
+                // solutions (when the system is suitably under-determined),
+                // but it might be nice if this was deterministic.
+                thread_rng().gen::<u8>()
+            } else {
+                // Let z' be the vector we get by setting bit i of z to z'_i.
+                // Since z_i is zero, and row i has a one in column i, we have
+                // row_i(z') = z'_i ^ row_i(z).
+                // We want row_i(z') = b, so we must choose
+                // z'_i = row_i(z) ^ b.
+                self.rows[i].eval(&z) ^ self.rows[i].b
+            };
+            z[limb] |= ((z_i & 1) as u64) << pos;
+        }
+        z
+    }
+
+    /// Insert the last few equations from this ribbon into `other`, and delete them from this
+    /// ribbon. This is used to slightly reduce overhead in block systems.
+    pub fn stitch(&mut self, other: &mut Ribbon<W, T>) {
+        // TODO tune count, prove optimality, etc.
+        let count = (((64 * W) as f64) / (1.0 + self.epsilon)).round() as usize;
+
+        // Move min(self.rows.len(), count) equations from self
+        let new_len = self.rows.len().saturating_sub(count);
+        for (i, mut eq) in self.rows.drain(new_len..).enumerate() {
+            eq.s = i;
+            other.insert_equation(eq);
+        }
+    }
+}
+
+/// Helper struct for building block systems. Don't construct this
+/// directly, just do `RibbonFilter::from(vec![r1, r2, r3]);`
+pub struct FilterBuilder<const W: usize, T: AsEquation<W> + Discriminant> {
+    blocks: Vec<Ribbon<W, T>>,
+}
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> FilterBuilder<W, T> {
+    /// Sort ribbons by descending rank (descending simplifies indexing).
+    fn sort(&mut self) {
+        self.blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
+    }
+
+    /// For each pair of consecutive ribbons (A, B) try to move a few of the last equations from
+    /// A into B to fill empty rows.
+    fn stitch(&mut self) {
+        let mut slice = self.blocks.as_mut_slice();
+        for _ in 0..slice.len() - 1 {
+            let (head, tail) = slice.split_at_mut(1);
+            head[0].stitch(&mut tail[0]);
+            slice = tail;
+        }
+    }
+
+    /// Solve the (block) system.
+    /// The blocks are sorted by descending rank. We need at least one solution (i.e. column
+    /// vector) per block, but we need no more than i solutions for a block of rank i.
+    /// Concretely, suppose the ranks are [4, 2, 1, 0]. Then our solution can look like
+    ///      block 0: | | | |
+    ///      block 1: | | 0 0
+    ///      block 2: | 0 0 0
+    ///      block 3: | 0 0 0
+    /// Since we serialize the block identifiers, offsets, and ranks in the final filter, we
+    /// don't need to encode the zeros.
+    fn solve(&self) -> Vec<Vec<u64>> {
+        let Some(first) = self.blocks.first() else {
+            return vec![];
+        };
+        let mut sols = vec![];
+        for i in 0..max(1, first.rank) {
+            // Back substitution across blocks.
+            let mut tail = vec![];
+            for j in (0..self.blocks.len()).rev() {
+                if max(1, self.blocks[j].rank) > i {
+                    tail = self.blocks[j].solve(&tail);
+                } else if j > 0 && max(1, self.blocks[j - 1].rank) > i {
+                    tail = self.blocks[j].solve(&tail);
+                    // XXX: Is this enough? Too much?
+                    tail.truncate(2 * W);
+                }
+            }
+            sols.push(tail);
+        }
+        sols
+    }
+
+    /// Do it! Sort the blocks, stitch 'em together, solve the system, and build an index.
+    pub fn finalize(&mut self) -> RibbonFilter<W, T> {
+        self.sort();
+        // XXX stitching disabled since we can't currently fix a system that
+        // is made inconsistent through stitching. Not sure stitching helps much
+        // anyway. Maybe we should only use it for approximate filters?
+        //self.stitch();
+        let solution = self.solve();
+        // construct the index---a map from a block identifier to that
+        // block's offset in the solution vector.
+        let mut index = FilterIndex::new();
+        let mut offset = 0;
+        for i in 0..self.blocks.len() {
+            let errors = self.blocks[i].errors.iter().map(|x| x.discriminant().to_vec()).collect();
+            index.insert(
+                self.blocks[i].id.clone(),
+                (offset, self.blocks[i].m, self.blocks[i].rank, errors),
+            );
+            offset += self.blocks[i].rows.len();
+        }
+        // TODO: Interleave solution columns for better cache locality.
+        // while querying.
+        RibbonFilter { index, solution, phantom: std::marker::PhantomData }
+    }
+}
+
+/// Metadata
+type FilterIndex = BTreeMap<
+    /* block id */ Vec<u8>,
+    (
+        /* offset */ usize,
+        /* m */ usize,
+        /* rank */ usize,
+        /* errors */ Vec<Vec<u8>>,
+    ),
+>;
+
+/// A solution to a ribbon system, along with metadata necessary for querying it.
+pub struct RibbonFilter<const W: usize, T: AsEquation<W> + Discriminant> {
+    index: FilterIndex,
+    solution: Vec<Vec<u64>>,
+    phantom: std::marker::PhantomData<T>,
+}
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> fmt::Display for RibbonFilter<W, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "RibbonFilter({:?})", self.index)
+    }
+}
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> RibbonFilter<W, T> {
+    // TODO: This should probably take an &impl AsEquation. It would be nice
+    // to have different structs for items at build time and at query time
+    // (we have membership labels at build time, which this function doesn't
+    // depend on).
+    /// Check if this filter contains the given item in the given block.
+    pub fn contains(&self, block: &impl AsRef<[u8]>, item: &T) -> Result<bool, ()> {
+        let Some((offset, m, rank, errors)) = self.index.get(AsRef::<[u8]>::as_ref(block)) else {
+            return Ok(false);
+        };
+        for error in errors {
+            if error == item.discriminant() {
+                return Err(());
+            }
+        }
+        // Empty blocks do not contain anything,
+        // despite having inner product 0 with everything.
+        if *m == 0 {
+            return Ok(false);
+        }
+        let mut eq = item.as_equation(*m);
+        eq.s += *offset;
+        // eq.b is irrelevant here. We won't know it when querying.
+        for i in 0..max(1, *rank) {
+            if eq.eval(&self.solution[i]) != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The same computation as `contains`, but it returns the vector of outputs instead of whether
+    /// that vector was zero.
+    pub fn eval(&self, block: &impl AsRef<[u8]>, item: &T) -> Result<Vec<u8>, ()> {
+        let Some((offset, m, rank, errors)) = self.index.get(AsRef::<[u8]>::as_ref(block)) else {
+            return Ok(vec![]);
+        };
+        for error in errors {
+            if error == item.discriminant() {
+                return Err(());
+            }
+        }
+        let mut eq = item.as_equation(*m);
+        eq.s += *offset;
+        let mut out = vec![];
+        for i in 0..max(1, *rank) {
+            out.push(eq.eval(&self.solution[i]));
+        }
+        Ok(out)
+    }
+
+    /// Helper function for computing the bit size of the solution matrix.
+    /// TODO: remove this
+    pub fn size(&self) -> usize {
+        64 * self.solution.iter().map(|x| x.len()).sum::<usize>()
+    }
+}
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> From<Vec<Ribbon<W, T>>> for RibbonFilter<W, T> {
+    fn from(blocks: Vec<Ribbon<W, T>>) -> RibbonFilter<W, T> {
+        FilterBuilder { blocks }.finalize()
+    }
+}
+
+
+/// Metadata
+type PreFilter = BTreeMap<
+    /* block id */ Vec<u8>,
+    /* item discriminants */ Vec<(Vec<u8>, bool)>,
+>;
+
+/// A pair of ribbon filters that, together, solve the exact membership query problem.
+///     + a "prefilter" that handles exceptions...
+/// TODO: Merge the three BTreeMaps.
+/// TODO: Serialization!
+pub struct Clubcard<const W: usize, T: AsEquation<W> + Discriminant> {
+    /// A (typically small) collection of items that are not encoded in the main filter.
+    /// Pulling these items aside lets us avoid repeating the filter construction process
+    /// in the event that the linear system for the exact filter is inconsistent.
+    pre_filter: PreFilter,
+    /// An approximate membership query filter to whittle down the universe
+    /// to a managable size.
+    approx_filter: Option<RibbonFilter<W, T>>,
+    /// An exact membership query filter to confirm membership in R for items that
+    /// pass through the approximate filter.
+    exact_filter: Option<RibbonFilter<W, T>>,
+}
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> Default for Clubcard<W, T> {
+    fn default() -> Self {
+        Clubcard {
+            pre_filter: Default::default(),
+            approx_filter: None,
+            exact_filter: None,
+        }
+    }
+}
+
+
+impl<const W: usize, T: AsEquation<W> + Discriminant> Clubcard<W, T> {
+    pub fn new() -> Clubcard<W, T> {
+        Clubcard::default()
+    }
+
+    pub fn collect_approx_ribbons(&mut self, ribbons: Vec<Ribbon<W, T>>) {
+        for ribbon in &ribbons {
+            // XXX avoid copies?
+            let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
+            self.pre_filter.insert(ribbon.id.clone(), errors);
+        }
+        self.approx_filter = Some(RibbonFilter::from(ribbons));
+    }
+
+    pub fn get_exact_builder<'a>(&'a self, block: &impl AsRef<[u8]>) -> RibbonBuilder<'a, W, T> {
+        RibbonBuilder::new(block, self.approx_filter.as_ref())
+    }
+
+    pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T>>) {
+        for ribbon in &ribbons {
+            // XXX avoid copies?
+            let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
+            if let Some(stash) = self.pre_filter.get_mut(&ribbon.id) {
+                stash.extend(errors);
+            } else {
+                self.pre_filter.insert(ribbon.id.clone(), errors);
+            }
+        }
+        self.exact_filter = Some(RibbonFilter::from(ribbons));
+    }
+
+    pub fn contains(&self, block: &impl AsRef<[u8]>, item: &T) -> bool {
+        if let Some(stash) = self.pre_filter.get(AsRef::<[u8]>::as_ref(block)) {
+            for (discriminant, status) in stash {
+                if discriminant == item.discriminant() {
+                    return *status;
+                }
+            }
+        }
+        self.approx_filter.as_ref().unwrap().contains(block, item).unwrap() && self.exact_filter.as_ref().unwrap().contains(block, item).unwrap()
+    }
+
+    /// Helper function for computing the bit size of the solution matrix.
+    /// TODO: remove this
+    pub fn size(&self) -> usize {
+        self.pre_filter.values().map(|x| x.iter().map(|y| (y.0.len() + 1) * 8).sum::<usize>()).sum::<usize>()
+            + self.approx_filter.as_ref().unwrap().size() + self.exact_filter.as_ref().unwrap().size()
+    }
+}
+
+pub trait Discriminant {
+    fn discriminant(&self) -> &[u8];
+    fn included(&self) -> bool;
+}
+
+//XXX: move this to rust-create-cascade
+//TODO: can we avoid copying members?
+#[derive(Clone, Debug)]
+pub struct CRLiteKey(
+    /// seed for randomizing construction
+    pub [u8; 8],
+    /// issuer spki hash
+    pub [u8; 32],
+    /// serial number. TODO: Can we use an array here?
+    pub Vec<u8>,
+    /// revocation status
+    pub bool,
+);
+
+impl AsEquation<4> for CRLiteKey {
+    fn as_equation(&self, m: usize) -> Equation<4> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.0);
+        hasher.update(self.1);
+        hasher.update(&self.2);
+        let mut a = [0u64; 4];
+        for (i, x) in hasher
+            .finalize()
+            .as_slice()
+            .chunks(std::mem::size_of::<u64>())
+            .enumerate()
+        {
+            a[i] = u64::from_le_bytes(x.try_into().unwrap());
+        }
+        a[0] |= 1;
+        // TODO better position selection
+        let s = (a[0] % max(1, m) as u64) as usize;
+        let b = if self.3 { 0 } else { 1 };
+        Equation { s, a, b }
+    }
+}
+
+/// XXX This is a ridiculous name
+/// XXX Putting `included` here is a kludge.
+impl Discriminant for CRLiteKey {
+    fn discriminant(&self) -> &[u8] {
+        &self.2
+    }
+    fn included(&self) -> bool {
+        self.3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::distributions::Uniform;
+
+    impl<const W: usize> AsEquation<W> for Equation<W> {
+        fn as_equation(&self, _m: usize) -> Equation<W> {
+            self.clone()
+        }
+    }
+
+    impl<const W: usize> Discriminant for Equation<W> {
+        fn discriminant(&self) -> &[u8] {
+            unsafe { std::mem::transmute(&self.a[..]) }
+        }
+
+        fn included(&self) -> bool {
+            self.b == 0
+        }
+    }
+
+    #[test]
+    fn test_equation_add() {
+        let mut e1 = Equation {
+            s: 127,
+            a: [0b11],
+            b: 1,
+        };
+        let e2 = Equation {
+            s: 127,
+            a: [0b01],
+            b: 1,
+        };
+        e1.add(&e2);
+        // test that shifting works
+        assert!(e1.s == 128);
+        assert!(e1.a[0] == 0b1);
+        assert!(e1.b == 0);
+
+        let mut e1 = Equation {
+            s: 127,
+            a: [0b11, 0b1110, 0b1, 0],
+            b: 1,
+        };
+        let e2 = Equation {
+            s: 127,
+            a: [0b01, 0b0100, 0b0, 0],
+            b: 1,
+        };
+        e1.add(&e2);
+        // test that shifting works
+        assert!(e1.s == 128);
+        assert!(e1.a[0] == 0b1);
+        // test that bits move between limbs
+        assert!(e1.a[1] == (1 << 63) | 0b101);
+        assert!(e1.a[2] == 0);
+        assert!(e1.a[3] == 0);
+        assert!(e1.b == 0);
+    }
+
+    #[test]
+    fn test_equation_eval() {
+        for s in 0..64 {
+            let eq = Equation {
+                s,
+                a: [0xffffffffffffffff, 0, 0, 0],
+                b: 0,
+            };
+            assert!(0 == eq.eval(&[]));
+            for i in 0..64 {
+                assert!(((i >= eq.s) as u8) == eq.eval(&[1 << i, 0]));
+                assert!(((i < eq.s) as u8) == eq.eval(&[0, 1 << i]));
+                assert!(0 == eq.eval(&[0, 0, 1 << i]));
+            }
+        }
+    }
+
+    #[test]
+    fn test_solve_identity() {
+        let n = 1024;
+        let mut r = RibbonBuilder::new(&"0", None);
+        for i in 0usize..n {
+            let mut eq = Equation::<1>::std(i);
+            eq.b = (i % 2) as u8;
+            r.insert(eq);
+        }
+        let r = r.build_exact();
+        let filter = RibbonFilter::from(vec![r]);
+        for i in 0usize..n {
+            assert!(filter.eval(&"0", &Equation::std(i)) == Ok(vec![(i % 2) as u8]));
+        }
+    }
+
+    #[test]
+    fn test_solve_empty() {
+        let n = 0;
+        let mut r = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
+        let r = r.build_approximate(0);
+        let filter = RibbonFilter::from(vec![r]);
+        for i in 0usize..n {
+            assert!(filter.eval(&"0", &Equation::std(i)) == Ok(vec![0]));
+        }
+    }
+
+    #[test]
+    fn test_solve_random() {
+        let n = 1024;
+        let mut r = Ribbon::new(&"0", n, n);
+        let mut s_dist = Uniform::new(0, r.m);
+        let mut eqs = Vec::with_capacity(n);
+        for _ in 0..n {
+            let eq = Equation::<4>::rand(&mut s_dist);
+            eqs.push(eq.clone());
+            r.insert(eq);
+        }
+        let x = r.solve(&[]);
+        for eq in &eqs {
+            assert!(eq.eval(&x) == eq.b);
+        }
+    }
+
+    //#[test]
+    //fn test_stitch_different_rank() {
+    //    let subset1_size = 1 << 10;
+    //    let subset2_size = 1 << 5;
+    //    let universe_size = 1 << 20;
+    //    let mut r1 = RibbonBuilder::new(&"A", None);
+    //    let mut r2 = RibbonBuilder::new(&"B", None);
+    //    for j in 0usize..subset1_size {
+    //        let item = CRLiteKey([0u8; 8], [0u8; 32], j.to_le_bytes().to_vec(), true);
+    //        r1.insert(item);
+    //    }
+    //    for j in 0usize..subset2_size {
+    //        let item = CRLiteKey([0u8; 8], [1u8; 32], j.to_le_bytes().to_vec(), true);
+    //        r2.insert(item);
+    //    }
+    //    //let mut r1 = r1.build_approximate(universe_size);
+    //    //let mut r2 = r2.build_approximate(universe_size);
+    //    //println!("{}", r2);
+    //    //r1.stitch(&mut r2);
+    //    //println!("{}", r2);
+    //    let filter = RibbonFilter::from(vec![
+    //        r1.build_approximate(universe_size),
+    //        r2.build_approximate(universe_size),
+    //    ]);
+    //    for j in 0usize..subset2_size {
+    //        let item = CRLiteKey([0u8; 8], [1u8; 32], j.to_le_bytes().to_vec(), true);
+    //        assert!(Ok(true) == filter.contains(&"B", &item));
+    //    }
+    //}
+
+    #[test]
+    fn test_exact_filter() {
+        let subset_sizes = [1 << 16, 1 << 15, 1 << 14, 1 << 13];
+        //let subset_sizes = [1 << 18, 1 << 18, 1 << 18, 1 << 18, 1 << 18, 1 << 18];
+        let universe_size = 1 << 18;
+        const W: usize = 4;
+
+        let mut top_builders = vec![];
+        for (i, n) in subset_sizes.iter().enumerate() {
+            let mut r = RibbonBuilder::new(&format!("{}", i), None);
+            for j in 0usize..*n {
+                let eq = CRLiteKey([0u8; 8], [i as u8; 32], j.to_le_bytes().to_vec(), true);
+                r.insert(eq);
+            }
+            top_builders.push(r)
+        }
+
+        println!(
+            "Number of items in top level builders {:?}",
+            top_builders
+                .iter()
+                .map(|r| (r.id.clone(), r.items.len()))
+                .collect::<Vec<(Vec<u8>, usize)>>()
+        );
+
+        let top_ribbons: Vec<Ribbon<W, CRLiteKey>> = top_builders
+            .drain(..)
+            .map(|r| r.build_approximate(universe_size))
+            .collect();
+        for r in &top_ribbons {
+            println!(
+                "{:?}: {} rows. Epsilon {}. Overhead {}.",
+                r.id,
+                r.rows.len(),
+                r.epsilon,
+                (r.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (r.rows.len() as f64))
+            );
+        }
+
+        let top_filter = RibbonFilter::from(top_ribbons);
+        println!("Top filter size: {}kB", top_filter.size() / 8 / 1024);
+
+        let mut bottom_builders = vec![];
+        for (i, n) in subset_sizes.iter().enumerate() {
+            let mut r = RibbonBuilder::new(&format!("{}", i), Some(&top_filter));
+            for j in 0usize..universe_size {
+                let item = CRLiteKey([0u8; 8], [i as u8; 32], j.to_le_bytes().to_vec(), j < *n);
+                r.insert(item);
+            }
+            bottom_builders.push(r)
+        }
+
+        println!(
+            "Number of items in bottom level builders {:?}",
+            bottom_builders
+                .iter()
+                .map(|r| (r.id.clone(), r.items.len()))
+                .collect::<Vec<(Vec<u8>, usize)>>()
+        );
+
+        let bottom_ribbons: Vec<Ribbon<W, CRLiteKey>> =
+            bottom_builders.drain(..).map(|r| r.build_exact()).collect();
+        for r in &bottom_ribbons {
+            println!(
+                "{:?}: {} rows. Overhead {}",
+                r.id,
+                r.rows.len(),
+                (r.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (r.rows.len() as f64))
+            );
+        }
+
+        let bottom_filter = RibbonFilter::from(bottom_ribbons);
+        println!("Bottom filter size: {}kB", bottom_filter.size() / 8 / 1024);
+
+        let size = top_filter.size() + bottom_filter.size();
+        let sum_subset_sizes: usize = subset_sizes.iter().sum();
+        let sum_universe_sizes: usize = subset_sizes.len() * universe_size;
+        let min_size = (sum_subset_sizes as f64)
+            * ((sum_universe_sizes as f64) / (sum_subset_sizes as f64)).log2()
+            + 1.44 * ((sum_subset_sizes) as f64);
+        println!("Combined filter size: {}kB", size / 8 / 1024);
+        println!("Size overhead {}", size as f64 / min_size);
+
+        println!("Checking construction");
+        println!(
+            "expecting {} revoked, {} not revoked",
+            sum_subset_sizes,
+            subset_sizes.len() * universe_size - sum_subset_sizes
+        );
+
+        let mut revoked = 0;
+        let mut not_revoked = 0;
+        for (i, _) in subset_sizes.iter().enumerate() {
+            for j in 0..universe_size {
+                let item = CRLiteKey(
+                    [0u8; 8],
+                    [i as u8; 32],
+                    j.to_le_bytes().to_vec(),
+                    /* unused */ false,
+                );
+                // XXX: update this test to handle error returns
+                if Ok(true) == top_filter.contains(&format!("{}", i), &item) {
+                    if Ok(true) == bottom_filter.contains(&format!("{}", i), &item) {
+                        revoked += 1;
+                    } else {
+                        not_revoked += 1;
+                    }
+                } else {
+                    not_revoked += 1;
+                }
+            }
+        }
+        println!("found {} revoked, {} not revoked", revoked, not_revoked);
+        assert!(sum_subset_sizes == revoked);
+        assert!(sum_universe_sizes - sum_subset_sizes == not_revoked);
+    }
+}
