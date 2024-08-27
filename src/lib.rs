@@ -270,15 +270,16 @@ pub struct Ribbon<const W: usize, T: AsEquation<W>> {
 
 impl<const W: usize, T: AsEquation<W>> fmt::Display for Ribbon<W, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (i, eq) in self.rows.iter().enumerate() {
-            write!(f, "{} | {:b} | ", i, eq.b)?;
-            write!(f, "{:>offset$}", "", offset = i % 16)?;
-            for j in 0..W {
-                write!(f, "{:b}", eq.a[j].reverse_bits())?;
-            }
-            writeln!(f)?;
-        }
-        Ok(())
+        write!(f,
+            "ribbon({:?}): m: {}, rows: {}, rank: {}, errors: {}, epsilon: {}, overhead {}",
+            self.id,
+            self.m,
+            self.rows.len(),
+            self.rank,
+            self.errors.len(),
+            self.epsilon,
+            (self.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (self.rows.len() as f64))
+        )
     }
 }
 
@@ -853,98 +854,73 @@ mod tests {
     //}
 
     #[test]
-    fn test_exact_filter() {
+    fn test_clubcard() {
         let subset_sizes = [1 << 16, 1 << 15, 1 << 14, 1 << 13];
-        //let subset_sizes = [1 << 18, 1 << 18, 1 << 18, 1 << 18, 1 << 18, 1 << 18];
         let universe_size = 1 << 18;
-        const W: usize = 4;
 
-        let mut top_builders = vec![];
+        let mut approx_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
             let mut r = RibbonBuilder::new(&format!("{}", i), None);
             for j in 0usize..*n {
                 let eq = CRLiteKey([0u8; 8], [i as u8; 32], j.to_le_bytes().to_vec(), true);
                 r.insert(eq);
             }
-            top_builders.push(r)
+            approx_builders.push(r)
         }
 
-        println!(
-            "Number of items in top level builders {:?}",
-            top_builders
-                .iter()
-                .map(|r| (r.id.clone(), r.items.len()))
-                .collect::<Vec<(Vec<u8>, usize)>>()
-        );
-
-        let top_ribbons: Vec<Ribbon<W, CRLiteKey>> = top_builders
+        let mut clubcard = Clubcard::new();
+        let approx_ribbons = approx_builders
             .drain(..)
             .map(|r| r.build_approximate(universe_size))
             .collect();
-        for r in &top_ribbons {
-            println!(
-                "{:?}: {} rows. Epsilon {}. Overhead {}.",
-                r.id,
-                r.rows.len(),
-                r.epsilon,
-                (r.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (r.rows.len() as f64))
-            );
+
+        println!("Approx ribbons:");
+        for r in &approx_ribbons {
+            println!("\t{}", r);
         }
 
-        let top_filter = RibbonFilter::from(top_ribbons);
-        println!("Top filter size: {}kB", top_filter.size() / 8 / 1024);
+        clubcard.collect_approx_ribbons(approx_ribbons);
+        println!("Approx filter size: {}kB", clubcard.approx_filter.as_ref().unwrap().size() / 8 / 1024);
 
-        let mut bottom_builders = vec![];
+        let mut exact_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
-            let mut r = RibbonBuilder::new(&format!("{}", i), Some(&top_filter));
+            let mut r = clubcard.get_exact_builder(&format!("{}", i));
             for j in 0usize..universe_size {
                 let item = CRLiteKey([0u8; 8], [i as u8; 32], j.to_le_bytes().to_vec(), j < *n);
                 r.insert(item);
             }
-            bottom_builders.push(r)
+            exact_builders.push(r)
         }
 
-        println!(
-            "Number of items in bottom level builders {:?}",
-            bottom_builders
-                .iter()
-                .map(|r| (r.id.clone(), r.items.len()))
-                .collect::<Vec<(Vec<u8>, usize)>>()
-        );
+        let exact_ribbons = exact_builders.drain(..).map(|r| r.build_exact()).collect();
 
-        let bottom_ribbons: Vec<Ribbon<W, CRLiteKey>> =
-            bottom_builders.drain(..).map(|r| r.build_exact()).collect();
-        for r in &bottom_ribbons {
-            println!(
-                "{:?}: {} rows. Overhead {}",
-                r.id,
-                r.rows.len(),
-                (r.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (r.rows.len() as f64))
-            );
+        println!("Exact ribbons:");
+        for r in &exact_ribbons{
+            println!("\t{}", r);
         }
 
-        let bottom_filter = RibbonFilter::from(bottom_ribbons);
-        println!("Bottom filter size: {}kB", bottom_filter.size() / 8 / 1024);
+        clubcard.collect_exact_ribbons(exact_ribbons);
+        println!("Exact filter size: {}kB", clubcard.exact_filter.as_ref().unwrap().size() / 8 / 1024);
 
-        let size = top_filter.size() + bottom_filter.size();
+        let size = clubcard.size();
+        println!("Combined filter size: {}kB", size / 8 / 1024);
+
         let sum_subset_sizes: usize = subset_sizes.iter().sum();
         let sum_universe_sizes: usize = subset_sizes.len() * universe_size;
         let min_size = (sum_subset_sizes as f64)
             * ((sum_universe_sizes as f64) / (sum_subset_sizes as f64)).log2()
             + 1.44 * ((sum_subset_sizes) as f64);
-        println!("Combined filter size: {}kB", size / 8 / 1024);
         println!("Size overhead {}", size as f64 / min_size);
-
         println!("Checking construction");
         println!(
-            "expecting {} revoked, {} not revoked",
+            "\texpecting {} included, {} excluded",
             sum_subset_sizes,
             subset_sizes.len() * universe_size - sum_subset_sizes
         );
 
-        let mut revoked = 0;
-        let mut not_revoked = 0;
-        for (i, _) in subset_sizes.iter().enumerate() {
+        let mut included = 0;
+        let mut excluded = 0;
+        for (i, n) in subset_sizes.iter().enumerate() {
             for j in 0..universe_size {
                 let item = CRLiteKey(
                     [0u8; 8],
@@ -952,20 +928,15 @@ mod tests {
                     j.to_le_bytes().to_vec(),
                     /* unused */ false,
                 );
-                // XXX: update this test to handle error returns
-                if Ok(true) == top_filter.contains(&format!("{}", i), &item) {
-                    if Ok(true) == bottom_filter.contains(&format!("{}", i), &item) {
-                        revoked += 1;
-                    } else {
-                        not_revoked += 1;
-                    }
+                if clubcard.contains(&format!("{}", i), &item) {
+                    included += 1;
                 } else {
-                    not_revoked += 1;
+                    excluded += 1;
                 }
             }
         }
-        println!("found {} revoked, {} not revoked", revoked, not_revoked);
-        assert!(sum_subset_sizes == revoked);
-        assert!(sum_universe_sizes - sum_subset_sizes == not_revoked);
+        println!("\tfound {} included, {} excluded", included, excluded);
+        assert!(sum_subset_sizes == included);
+        assert!(sum_universe_sizes - sum_subset_sizes == excluded);
     }
 }
