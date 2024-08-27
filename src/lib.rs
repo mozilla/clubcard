@@ -97,7 +97,8 @@ impl<const W: usize> Equation<W> {
     }
 
     /// Is this a(x) = 1 or a(x) = 0?
-    pub fn is_zero(&self) -> bool { // TODO: is_const? or maybe this gets the point across.
+    pub fn is_zero(&self) -> bool {
+        // TODO: is_const? or maybe this gets the point across.
         self.a == [0u64; W]
     }
 
@@ -230,17 +231,19 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// ~|R|. In other words, the ribbon solves the approximate membership query problem with a
     /// false positive rate roughly 2^-r = |R| / (|U| - |R|).
     /// The size of this ribbon is proportional to r|R|.
-    pub fn build_approximate(self, universe_size: usize) -> Ribbon<W, T, Approximate> {
+    pub fn build_approximate(mut self, universe_size: usize) -> Ribbon<W, T, Approximate> {
         assert!(self.items.len() <= universe_size);
         // If the set is very small, we'll just tag each element as an encoding error
         // so that it gets inserted into a separate retrieval structure later.
-        if self.items.len() < 128 { // XXX Tune this.
+        if self.items.len() < 128 {
+            // XXX Tune this.
             let mut out = Ribbon::<W, T, Approximate>::new(&self.id, 0, 0);
             out.errors = self.items;
             out
         } else {
-            let mut out = Ribbon::<W, T, Approximate>::new(&self.id, self.items.len(), universe_size);
-            for item in self.items {
+            let mut out =
+                Ribbon::<W, T, Approximate>::new(&self.id, self.items.len(), universe_size);
+            for item in self.items.drain(..) {
                 out.insert(item);
             }
             // Insertions should not fail for a homogeneous system.
@@ -254,18 +257,12 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// of this ribbon is proportional to |U|. In the typical use case, the set U is the result of
     /// filtering a larger universe with a false positive rate of 2^-r. This allows for exact
     /// encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
-    pub fn build_exact(self) -> Ribbon<W, T, Exact> {
-        if self.items.len() < 128 { // XXX Tune this, or maybe remove it.
-            let mut out = Ribbon::<W, T, Exact>::new(&self.id, 0);
-            out.errors = self.items;
-            out
-        } else {
-            let mut out = Ribbon::<W, T, Exact>::new(&self.id, self.items.len());
-            for item in self.items {
-                out.insert(item);
-            }
-            out
+    pub fn build_exact(mut self) -> Ribbon<W, T, Exact> {
+        let mut out = Ribbon::<W, T, Exact>::new(&self.id, self.items.len());
+        for item in self.items.drain(..) {
+            out.insert(item);
         }
+        out
     }
 }
 
@@ -289,7 +286,8 @@ pub struct Ribbon<const W: usize, T: Filterable<W>, ApproxOrExact> {
 
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W, T, ApproxOrExact> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
+        write!(
+            f,
             "ribbon({:?}): m: {}, rows: {}, rank: {}, errors: {}, epsilon: {}, overhead {}",
             self.id,
             self.m,
@@ -505,7 +503,11 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> FilterBuilder<W, T, Approx
         let mut index = FilterIndex::new();
         let mut offset = 0;
         for i in 0..self.blocks.len() {
-            let errors = self.blocks[i].errors.iter().map(|x| x.discriminant().to_vec()).collect();
+            let errors = self.blocks[i]
+                .errors
+                .iter()
+                .map(|x| x.discriminant().to_vec())
+                .collect();
             index.insert(
                 self.blocks[i].id.clone(),
                 (offset, self.blocks[i].m, self.blocks[i].rank, errors),
@@ -514,7 +516,12 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> FilterBuilder<W, T, Approx
         }
         // TODO: Interleave solution columns for better cache locality.
         // while querying.
-        RibbonFilter { index, solution, phantom: std::marker::PhantomData, phantom2: std::marker::PhantomData }
+        RibbonFilter {
+            index,
+            solution,
+            phantom: std::marker::PhantomData,
+            phantom2: std::marker::PhantomData,
+        }
     }
 }
 
@@ -537,7 +544,9 @@ pub struct RibbonFilter<const W: usize, T: Filterable<W>, ApproxOrExact> {
     phantom2: std::marker::PhantomData<ApproxOrExact>,
 }
 
-impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for RibbonFilter<W, T, ApproxOrExact> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
+    for RibbonFilter<W, T, ApproxOrExact>
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "RibbonFilter({:?})", self.index)
     }
@@ -601,17 +610,17 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> RibbonFilter<W, T, ApproxO
     }
 }
 
-impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, ApproxOrExact>>> for RibbonFilter<W, T, ApproxOrExact> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, ApproxOrExact>>>
+    for RibbonFilter<W, T, ApproxOrExact>
+{
     fn from(blocks: Vec<Ribbon<W, T, ApproxOrExact>>) -> RibbonFilter<W, T, ApproxOrExact> {
         FilterBuilder { blocks }.finalize()
     }
 }
 
 /// Metadata
-type PreFilter = BTreeMap<
-    /* block id */ Vec<u8>,
-    /* item discriminants */ Vec<(Vec<u8>, bool)>,
->;
+type PreFilter =
+    BTreeMap</* block id */ Vec<u8>, /* item discriminants */ Vec<(Vec<u8>, bool)>>;
 
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
 ///     + a "prefilter" that handles exceptions...
@@ -640,7 +649,6 @@ impl<const W: usize, T: Filterable<W>> Default for Clubcard<W, T> {
     }
 }
 
-
 impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
     pub fn new() -> Clubcard<W, T> {
         Clubcard::default()
@@ -649,7 +657,11 @@ impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
     pub fn collect_approx_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Approximate>>) {
         for ribbon in &ribbons {
             // XXX avoid copies?
-            let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
+            let errors = ribbon
+                .errors
+                .iter()
+                .map(|x| (x.discriminant().to_vec(), x.included()))
+                .collect();
             self.pre_filter.insert(ribbon.id.clone(), errors);
         }
         self.approx_filter = Some(RibbonFilter::from(ribbons));
@@ -662,7 +674,11 @@ impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
     pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Exact>>) {
         for ribbon in &ribbons {
             // XXX avoid copies?
-            let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
+            let errors = ribbon
+                .errors
+                .iter()
+                .map(|x| (x.discriminant().to_vec(), x.included()))
+                .collect();
             if let Some(stash) = self.pre_filter.get_mut(&ribbon.id) {
                 stash.extend(errors);
             } else {
@@ -680,14 +696,28 @@ impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
                 }
             }
         }
-        self.approx_filter.as_ref().unwrap().contains(block, item).unwrap() && self.exact_filter.as_ref().unwrap().contains(block, item).unwrap()
+        self.approx_filter
+            .as_ref()
+            .unwrap()
+            .contains(block, item)
+            .unwrap()
+            && self
+                .exact_filter
+                .as_ref()
+                .unwrap()
+                .contains(block, item)
+                .unwrap()
     }
 
     /// Helper function for computing the bit size of the solution matrix.
     /// TODO: remove this
     pub fn size(&self) -> usize {
-        self.pre_filter.values().map(|x| x.iter().map(|y| (y.0.len() + 1) * 8).sum::<usize>()).sum::<usize>()
-            + self.approx_filter.as_ref().unwrap().size() + self.exact_filter.as_ref().unwrap().size()
+        self.pre_filter
+            .values()
+            .map(|x| x.iter().map(|y| (y.0.len() + 1) * 8).sum::<usize>())
+            .sum::<usize>()
+            + self.approx_filter.as_ref().unwrap().size()
+            + self.exact_filter.as_ref().unwrap().size()
     }
 }
 
@@ -830,9 +860,8 @@ mod tests {
     #[test]
     fn test_solve_empty() {
         let n = 0;
-        let mut r = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
-        let r = r.build_approximate(0);
-        let filter = RibbonFilter::from(vec![r]);
+        let r = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
+        let filter = RibbonFilter::from(vec![r.build_approximate(0)]);
         for i in 0usize..n {
             assert!(filter.eval(&"0", &Equation::std(i)) == Ok(vec![0]));
         }
@@ -913,7 +942,10 @@ mod tests {
         }
 
         clubcard.collect_approx_ribbons(approx_ribbons);
-        println!("Approx filter size: {}kB", clubcard.approx_filter.as_ref().unwrap().size() / 8 / 1024);
+        println!(
+            "Approx filter size: {}kB",
+            clubcard.approx_filter.as_ref().unwrap().size() / 8 / 1024
+        );
 
         let mut exact_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
@@ -928,12 +960,15 @@ mod tests {
         let exact_ribbons = exact_builders.drain(..).map(|r| r.build_exact()).collect();
 
         println!("Exact ribbons:");
-        for r in &exact_ribbons{
+        for r in &exact_ribbons {
             println!("\t{}", r);
         }
 
         clubcard.collect_exact_ribbons(exact_ribbons);
-        println!("Exact filter size: {}kB", clubcard.exact_filter.as_ref().unwrap().size() / 8 / 1024);
+        println!(
+            "Exact filter size: {}kB",
+            clubcard.exact_filter.as_ref().unwrap().size() / 8 / 1024
+        );
 
         let size = clubcard.size();
         println!("Combined filter size: {}kB", size / 8 / 1024);
