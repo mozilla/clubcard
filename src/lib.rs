@@ -170,6 +170,14 @@ pub trait Filterable<const W: usize> {
     fn included(&self) -> bool;
 }
 
+/// Marker type for checking that, for example, only Exact ribbons are passed to functions such as
+/// Clubcard::collect_exact_ribbons.
+pub struct Exact;
+
+/// Marker type for checking that, for example, only Approximate ribbons are passed to functions such as
+/// Clubcard::collect_approximate_ribbons.
+pub struct Approximate;
+
 /// A RibbonBuilder collects a set of items for insertion into a Ribbon. If the optional filter is
 /// provided, then only items that are contained in the filter will be inserted.
 pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
@@ -178,7 +186,7 @@ pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
     /// items to be inserted.
     pub items: Vec<T>,
     /// filter for pruning insertions.
-    pub filter: Option<&'a RibbonFilter<W, T>>,
+    pub filter: Option<&'a RibbonFilter<W, T, Approximate>>,
 }
 
 impl<'a, const W: usize, T: Filterable<W>> fmt::Display for RibbonBuilder<'a, W, T> {
@@ -196,7 +204,7 @@ impl<'a, const W: usize, T: Filterable<W>> fmt::Display for RibbonBuilder<'a, W,
 impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     pub fn new(
         id: &impl AsRef<[u8]>,
-        filter: Option<&'a RibbonFilter<W, T>>,
+        filter: Option<&'a RibbonFilter<W, T, Approximate>>,
     ) -> RibbonBuilder<'a, W, T> {
         RibbonBuilder {
             id: AsRef::<[u8]>::as_ref(id).to_vec(),
@@ -222,16 +230,16 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// ~|R|. In other words, the ribbon solves the approximate membership query problem with a
     /// false positive rate roughly 2^-r = |R| / (|U| - |R|).
     /// The size of this ribbon is proportional to r|R|.
-    pub fn build_approximate(self, universe_size: usize) -> Ribbon<W, T> {
+    pub fn build_approximate(self, universe_size: usize) -> Ribbon<W, T, Approximate> {
         assert!(self.items.len() <= universe_size);
         // If the set is very small, we'll just tag each element as an encoding error
         // so that it gets inserted into a separate retrieval structure later.
         if self.items.len() < 128 { // XXX Tune this.
-            let mut out = Ribbon::new(&self.id, 0, 0);
+            let mut out = Ribbon::<W, T, Approximate>::new(&self.id, 0, 0);
             out.errors = self.items;
             out
         } else {
-            let mut out = Ribbon::new(&self.id, self.items.len(), universe_size);
+            let mut out = Ribbon::<W, T, Approximate>::new(&self.id, self.items.len(), universe_size);
             for item in self.items {
                 out.insert(item);
             }
@@ -246,13 +254,13 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// of this ribbon is proportional to |U|. In the typical use case, the set U is the result of
     /// filtering a larger universe with a false positive rate of 2^-r. This allows for exact
     /// encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
-    pub fn build_exact(self) -> Ribbon<W, T> {
+    pub fn build_exact(self) -> Ribbon<W, T, Exact> {
         if self.items.len() < 128 { // XXX Tune this, or maybe remove it.
-            let mut out = Ribbon::new(&self.id, 0, 0);
+            let mut out = Ribbon::<W, T, Exact>::new(&self.id, 0);
             out.errors = self.items;
             out
         } else {
-            let mut out = Ribbon::new(&self.id, self.items.len(), self.items.len());
+            let mut out = Ribbon::<W, T, Exact>::new(&self.id, self.items.len());
             for item in self.items {
                 out.insert(item);
             }
@@ -262,7 +270,7 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
 }
 
 /// A compact representation of a linear system AX = B
-pub struct Ribbon<const W: usize, T: Filterable<W>> {
+pub struct Ribbon<const W: usize, T: Filterable<W>, ApproxOrExact> {
     /// A block identifier. Used to build an index for partitioned filters.
     id: Vec<u8>,
     /// The overhead.
@@ -275,9 +283,11 @@ pub struct Ribbon<const W: usize, T: Filterable<W>> {
     rows: Vec<Equation<W>>,
     /// A (typically short) list of items that failed insertion
     errors: Vec<T>,
+    /// Marker for whether this is an Approximate or an Exact filter.
+    phantom: std::marker::PhantomData<ApproxOrExact>,
 }
 
-impl<const W: usize, T: Filterable<W>> fmt::Display for Ribbon<W, T> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W, T, ApproxOrExact> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
             "ribbon({:?}): m: {}, rows: {}, rank: {}, errors: {}, epsilon: {}, overhead {}",
@@ -292,7 +302,7 @@ impl<const W: usize, T: Filterable<W>> fmt::Display for Ribbon<W, T> {
     }
 }
 
-impl<const W: usize, T: Filterable<W>> Ribbon<W, T> {
+impl<const W: usize, T: Filterable<W>> Ribbon<W, T, Approximate> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
     pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize) -> Self {
@@ -317,9 +327,32 @@ impl<const W: usize, T: Filterable<W>> Ribbon<W, T> {
             epsilon,
             rank,
             errors: vec![],
+            phantom: std::marker::PhantomData,
         }
     }
+}
 
+impl<const W: usize, T: Filterable<W>> Ribbon<W, T, Exact> {
+    /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
+    /// `universe_size`.
+    pub fn new(id: &impl AsRef<[u8]>, size: usize) -> Self {
+        // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
+        let epsilon = 0.08;
+        let m = ((1.0 + epsilon) * (size as f64)).floor() as usize;
+
+        Ribbon {
+            id: AsRef::<[u8]>::as_ref(id).to_vec(),
+            rows: vec![Equation::zero(); m],
+            m,
+            epsilon,
+            rank: 0,
+            errors: vec![],
+            phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact> {
     /// Hash the item to an Equation and insert it into the system.
     pub fn insert(&mut self, item: T) -> bool {
         let eq = item.as_equation(self.m);
@@ -391,7 +424,7 @@ impl<const W: usize, T: Filterable<W>> Ribbon<W, T> {
 
     /// Insert the last few equations from this ribbon into `other`, and delete them from this
     /// ribbon. This is used to slightly reduce overhead in block systems.
-    pub fn stitch(&mut self, other: &mut Ribbon<W, T>) {
+    pub fn stitch(&mut self, other: &mut Ribbon<W, T, ApproxOrExact>) {
         // TODO tune count, prove optimality, etc.
         let count = (((64 * W) as f64) / (1.0 + self.epsilon)).round() as usize;
 
@@ -406,11 +439,11 @@ impl<const W: usize, T: Filterable<W>> Ribbon<W, T> {
 
 /// Helper struct for building block systems. Don't construct this
 /// directly, just do `RibbonFilter::from(vec![r1, r2, r3]);`
-pub struct FilterBuilder<const W: usize, T: Filterable<W>> {
-    blocks: Vec<Ribbon<W, T>>,
+pub struct FilterBuilder<const W: usize, T: Filterable<W>, ApproxOrExact> {
+    blocks: Vec<Ribbon<W, T, ApproxOrExact>>,
 }
 
-impl<const W: usize, T: Filterable<W>> FilterBuilder<W, T> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> FilterBuilder<W, T, ApproxOrExact> {
     /// Sort ribbons by descending rank (descending simplifies indexing).
     fn sort(&mut self) {
         self.blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
@@ -460,7 +493,7 @@ impl<const W: usize, T: Filterable<W>> FilterBuilder<W, T> {
     }
 
     /// Do it! Sort the blocks, stitch 'em together, solve the system, and build an index.
-    pub fn finalize(&mut self) -> RibbonFilter<W, T> {
+    pub fn finalize(&mut self) -> RibbonFilter<W, T, ApproxOrExact> {
         self.sort();
         // XXX stitching disabled since we can't currently fix a system that
         // is made inconsistent through stitching. Not sure stitching helps much
@@ -481,7 +514,7 @@ impl<const W: usize, T: Filterable<W>> FilterBuilder<W, T> {
         }
         // TODO: Interleave solution columns for better cache locality.
         // while querying.
-        RibbonFilter { index, solution, phantom: std::marker::PhantomData }
+        RibbonFilter { index, solution, phantom: std::marker::PhantomData, phantom2: std::marker::PhantomData }
     }
 }
 
@@ -497,19 +530,20 @@ type FilterIndex = BTreeMap<
 >;
 
 /// A solution to a ribbon system, along with metadata necessary for querying it.
-pub struct RibbonFilter<const W: usize, T: Filterable<W>> {
+pub struct RibbonFilter<const W: usize, T: Filterable<W>, ApproxOrExact> {
     index: FilterIndex,
     solution: Vec<Vec<u64>>,
     phantom: std::marker::PhantomData<T>,
+    phantom2: std::marker::PhantomData<ApproxOrExact>,
 }
 
-impl<const W: usize, T: Filterable<W>> fmt::Display for RibbonFilter<W, T> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for RibbonFilter<W, T, ApproxOrExact> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "RibbonFilter({:?})", self.index)
     }
 }
 
-impl<const W: usize, T: Filterable<W>> RibbonFilter<W, T> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> RibbonFilter<W, T, ApproxOrExact> {
     // TODO: This should probably take an &impl Filterable. It would be nice
     // to have different structs for items at build time and at query time
     // (we have membership labels at build time, which this function doesn't
@@ -567,12 +601,11 @@ impl<const W: usize, T: Filterable<W>> RibbonFilter<W, T> {
     }
 }
 
-impl<const W: usize, T: Filterable<W>> From<Vec<Ribbon<W, T>>> for RibbonFilter<W, T> {
-    fn from(blocks: Vec<Ribbon<W, T>>) -> RibbonFilter<W, T> {
+impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, ApproxOrExact>>> for RibbonFilter<W, T, ApproxOrExact> {
+    fn from(blocks: Vec<Ribbon<W, T, ApproxOrExact>>) -> RibbonFilter<W, T, ApproxOrExact> {
         FilterBuilder { blocks }.finalize()
     }
 }
-
 
 /// Metadata
 type PreFilter = BTreeMap<
@@ -591,10 +624,10 @@ pub struct Clubcard<const W: usize, T: Filterable<W>> {
     pre_filter: PreFilter,
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
-    approx_filter: Option<RibbonFilter<W, T>>,
+    approx_filter: Option<RibbonFilter<W, T, Approximate>>,
     /// An exact membership query filter to confirm membership in R for items that
     /// pass through the approximate filter.
-    exact_filter: Option<RibbonFilter<W, T>>,
+    exact_filter: Option<RibbonFilter<W, T, Exact>>,
 }
 
 impl<const W: usize, T: Filterable<W>> Default for Clubcard<W, T> {
@@ -613,7 +646,7 @@ impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
         Clubcard::default()
     }
 
-    pub fn collect_approx_ribbons(&mut self, ribbons: Vec<Ribbon<W, T>>) {
+    pub fn collect_approx_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Approximate>>) {
         for ribbon in &ribbons {
             // XXX avoid copies?
             let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
@@ -626,7 +659,7 @@ impl<const W: usize, T: Filterable<W>> Clubcard<W, T> {
         RibbonBuilder::new(block, self.approx_filter.as_ref())
     }
 
-    pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T>>) {
+    pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Exact>>) {
         for ribbon in &ribbons {
             // XXX avoid copies?
             let errors = ribbon.errors.iter().map(|x| (x.discriminant().to_vec(), x.included())).collect();
@@ -808,11 +841,12 @@ mod tests {
     #[test]
     fn test_solve_random() {
         let n = 1024;
-        let mut r = Ribbon::new(&"0", n, n);
+        const W: usize = 2;
+        let mut r = Ribbon::<W, Equation<W>, Exact>::new(&"0", n);
         let mut s_dist = Uniform::new(0, r.m);
         let mut eqs = Vec::with_capacity(n);
         for _ in 0..n {
-            let eq = Equation::<4>::rand(&mut s_dist);
+            let eq = Equation::<W>::rand(&mut s_dist);
             eqs.push(eq.clone());
             r.insert(eq);
         }
