@@ -724,25 +724,6 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         self.into()
     }
 
-    pub fn contains(&self, item: &T) -> bool {
-        if let Some(stash) = self.pre_filter.get(item.shard()) {
-            for (discriminant, status) in stash {
-                if discriminant == item.discriminant() {
-                    return *status;
-                }
-            }
-        }
-        let Some(approx_filter) = self.approx_filter.as_ref() else {
-            // XXX: panic here?
-            return false;
-        };
-        let Some(exact_filter) = self.exact_filter.as_ref() else {
-            // XXX: panic here?
-            return false;
-        };
-        approx_filter.contains(item).unwrap() && exact_filter.contains(item).unwrap()
-    }
-
     /// Helper function for computing the bit size of the solution matrix.
     /// TODO: remove this
     pub fn size(&self) -> usize {
