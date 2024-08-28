@@ -43,7 +43,11 @@
 //!
 //#![warn(missing_docs)]
 
+extern crate bincode;
+
 use rand::{distributions::Distribution, thread_rng, Rng};
+
+use serde::{Deserialize, Serialize};
 
 use sha2::{Digest, Sha256};
 use std::cmp::{max, min};
@@ -74,6 +78,7 @@ impl<const W: usize> Equation<W> {
     }
 
     /// Construct the equation a(x) = x_i
+    #[cfg(test)]
     pub fn std(i: usize) -> Self {
         let mut a = [0u64; W];
         a[0] = 1;
@@ -81,6 +86,7 @@ impl<const W: usize> Equation<W> {
     }
 
     /// Construct an random aligned equation using given distribution for s.
+    #[cfg(test)]
     pub fn rand(s_dist: &impl Distribution<usize>) -> Self {
         let mut rng = rand::thread_rng();
         let s = s_dist.sample(&mut rng);
@@ -535,8 +541,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
             );
             offset += self.blocks[i].rows.len();
         }
-        // TODO: Interleave solution columns for better cache locality.
-        // while querying.
         ShardedRibbonFilter {
             index,
             solution,
@@ -606,6 +610,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
 
     /// The same computation as `contains`, but it returns the vector of outputs instead of whether
     /// that vector was zero.
+    #[cfg(test)]
     pub fn eval(&self, item: &T) -> Result<Vec<u8>, ()> {
         let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
             return Ok(vec![]);
@@ -713,6 +718,10 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         self.exact_filter = Some(ShardedRibbonFilter::from(ribbons));
     }
 
+    pub fn build(self) -> Clubcard {
+        self.into()
+    }
+
     pub fn contains(&self, item: &T) -> bool {
         if let Some(stash) = self.pre_filter.get(item.shard()) {
             for (discriminant, status) in stash {
@@ -741,6 +750,104 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
             .sum::<usize>()
             + self.approx_filter.as_ref().unwrap().size()
             + self.exact_filter.as_ref().unwrap().size()
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct ClubcardShardMeta {
+    approx_filter_offset: usize,
+    approx_filter_m: usize,
+    approx_filter_rank: usize,
+    exact_filter_offset: usize,
+    exact_filter_m: usize,
+    include_errors: Vec<Vec<u8>>,
+    exclude_errors: Vec<Vec<u8>>,
+}
+
+type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardShardMeta>;
+
+#[derive(Serialize, Deserialize)]
+pub struct Clubcard {
+    index: ClubcardIndex,
+    approx_filter: Vec<Vec<u64>>,
+    exact_filter: Vec<u64>,
+}
+
+impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W,T>> for Clubcard {
+    fn from(builder: ClubcardBuilder<W, T>) -> Clubcard {
+        let mut index: ClubcardIndex = BTreeMap::new();
+        for (shard, errors) in builder.pre_filter.iter() {
+            let mut shard_meta = ClubcardShardMeta::default();
+            let include_errors = errors.iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
+            let exclude_errors = errors.iter().filter(|x| !x.1).map(|x| x.0.clone()).collect();
+            shard_meta.include_errors = include_errors;
+            shard_meta.exclude_errors = exclude_errors;
+            index.insert(shard.clone(), shard_meta);
+        }
+
+        let approx_filter = builder.approx_filter.as_ref().unwrap();
+        for (shard, (offset, m, rank, _)) in &approx_filter.index {
+            let meta = index.get_mut(shard).unwrap();
+            meta.approx_filter_offset = *offset;
+            meta.approx_filter_m = *m;
+            meta.approx_filter_rank = *rank;
+        }
+
+        let exact_filter = builder.exact_filter.as_ref().unwrap();
+        for (shard, (offset, m, rank, _)) in &exact_filter.index {
+            assert!(*rank == 0);
+            let meta = index.get_mut(shard).unwrap();
+            meta.exact_filter_offset = *offset;
+            meta.exact_filter_m = *m;
+        }
+
+        // TODO: Interleave approx_solution columns for better cache locality.
+        // while querying.
+
+        Clubcard {
+            index,
+            approx_filter: approx_filter.solution.clone(),
+            exact_filter: exact_filter.solution[0].clone(),
+        }
+    }
+}
+
+impl Clubcard {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+
+    pub fn contains<const W: usize>(&self, item: &impl Filterable<W>) -> bool {
+        let Some(meta) = self.index.get(item.shard()) else {
+            return false;
+        };
+        for error in &meta.include_errors {
+            if error == item.discriminant() {
+                return true;
+            }
+        }
+        for error in &meta.exclude_errors {
+            if error == item.discriminant() {
+                return false;
+            }
+        }
+        if meta.approx_filter_m == 0 {
+            return false;
+        }
+        let mut approx_eq = item.as_equation(meta.approx_filter_m);
+        approx_eq.s += meta.approx_filter_offset;
+        for i in 0..max(1, meta.approx_filter_rank) {
+            if approx_eq.eval(&self.approx_filter[i]) != 0 {
+                return false;
+            }
+        }
+
+        if meta.exact_filter_m == 0 {
+            return false;
+        }
+        let mut exact_eq = item.as_equation(meta.exact_filter_m);
+        exact_eq.s += meta.exact_filter_offset;
+        exact_eq.eval(&self.exact_filter) == 0
     }
 }
 
@@ -1015,6 +1122,8 @@ mod tests {
             sum_subset_sizes,
             subset_sizes.len() * universe_size - sum_subset_sizes
         );
+
+        let clubcard = clubcard.build();
 
         let mut included = 0;
         let mut excluded = 0;
