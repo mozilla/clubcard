@@ -332,7 +332,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
         assert!(subset_size <= universe_size);
 
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
-        let epsilon = 0.08;
+        let epsilon = 0.033;
         let m = ((1.0 + epsilon) * (subset_size as f64)).floor() as usize;
 
         let rank = if subset_size == 0 || 2 * subset_size >= universe_size {
@@ -360,7 +360,7 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
     /// `universe_size`.
     pub fn new(id: &impl AsRef<[u8]>, size: usize) -> Self {
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
-        let epsilon = 0.08;
+        let epsilon = 0.033;
         let m = ((1.0 + epsilon) * (size as f64)).floor() as usize;
 
         Ribbon {
