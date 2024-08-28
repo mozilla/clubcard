@@ -506,11 +506,13 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
             for j in (0..self.blocks.len()).rev() {
                 if max(1, self.blocks[j].rank) > i {
                     tail = self.blocks[j].solve(&tail);
-                } else if j > 0 && max(1, self.blocks[j - 1].rank) > i {
-                    tail = self.blocks[j].solve(&tail);
-                    // XXX: Is this enough? Too much?
-                    tail.truncate(2 * W);
                 }
+                // this might be needed if we reintroduce stitching
+                //else if j > 0 && max(1, self.blocks[j - 1].rank) > i {
+                //    tail = self.blocks[j].solve(&tail);
+                //    // XXX: Is this enough? Too much?
+                //    tail.truncate(2 * W);
+                //}
             }
             sols.push(tail);
         }
