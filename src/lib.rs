@@ -45,10 +45,10 @@
 
 extern crate bincode;
 
-use rand::{distributions::Distribution, thread_rng, Rng};
-
+#[cfg(test)]
+use rand::distributions::Distribution;
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-
 use sha2::{Digest, Sha256};
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
@@ -773,13 +773,17 @@ pub struct Clubcard {
     exact_filter: Vec<u64>,
 }
 
-impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W,T>> for Clubcard {
+impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W, T>> for Clubcard {
     fn from(builder: ClubcardBuilder<W, T>) -> Clubcard {
         let mut index: ClubcardIndex = BTreeMap::new();
         for (shard, errors) in builder.pre_filter.iter() {
             let mut shard_meta = ClubcardShardMeta::default();
             let include_errors = errors.iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
-            let exclude_errors = errors.iter().filter(|x| !x.1).map(|x| x.0.clone()).collect();
+            let exclude_errors = errors
+                .iter()
+                .filter(|x| !x.1)
+                .map(|x| x.0.clone())
+                .collect();
             shard_meta.include_errors = include_errors;
             shard_meta.exclude_errors = exclude_errors;
             index.insert(shard.clone(), shard_meta);
