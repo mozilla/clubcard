@@ -257,7 +257,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
         assert!(builder.items.len() <= builder.universe_size);
         // If the set is very small, we'll just tag each element as an encoding error
         // so that it gets inserted into a separate retrieval structure later.
-        if builder.items.len() < 128 {
+        if builder.items.len() < 16 {
             // XXX Tune this.
             let mut out = ApproximateRibbon::new(&builder.id, 0, 0);
             out.errors = builder.items;
