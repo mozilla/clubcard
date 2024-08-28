@@ -1064,10 +1064,10 @@ mod tests {
         let subset_sizes = [1 << 16, 1 << 15, 1 << 14, 1 << 13];
         let universe_size = 1 << 18;
 
-        let mut clubcard = ClubcardBuilder::new();
+        let mut clubcard_builder = ClubcardBuilder::new();
         let mut approx_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
-            let mut r = clubcard.get_approx_builder(&[i as u8; 32]);
+            let mut r = clubcard_builder.get_approx_builder(&[i as u8; 32]);
             for j in 0usize..*n {
                 let eq = CRLiteKey([i as u8; 32], j.to_le_bytes().to_vec(), true);
                 r.insert(eq);
@@ -1086,15 +1086,15 @@ mod tests {
             println!("\t{}", r);
         }
 
-        clubcard.collect_approx_ribbons(approx_ribbons);
+        clubcard_builder.collect_approx_ribbons(approx_ribbons);
         println!(
             "Approx filter size: {}kB",
-            clubcard.approx_filter.as_ref().unwrap().size() / 8 / 1024
+            clubcard_builder.approx_filter.as_ref().unwrap().size() / 8 / 1024
         );
 
         let mut exact_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
-            let mut r = clubcard.get_exact_builder(&[i as u8; 32]);
+            let mut r = clubcard_builder.get_exact_builder(&[i as u8; 32]);
             for j in 0usize..universe_size {
                 let item = CRLiteKey([i as u8; 32], j.to_le_bytes().to_vec(), j < *n);
                 r.insert(item);
@@ -1109,14 +1109,15 @@ mod tests {
             println!("\t{}", r);
         }
 
-        clubcard.collect_exact_ribbons(exact_ribbons);
+        clubcard_builder.collect_exact_ribbons(exact_ribbons);
         println!(
             "Exact filter size: {}kB",
-            clubcard.exact_filter.as_ref().unwrap().size() / 8 / 1024
+            clubcard_builder.exact_filter.as_ref().unwrap().size() / 8 / 1024
         );
 
-        let size = clubcard.size();
-        println!("Combined filter size: {}kB", size / 8 / 1024);
+        let clubcard = clubcard_builder.build();
+        let size = 8 * clubcard.to_bytes().len();
+        println!("Serialized clubcard size: {}kB", size / 8 / 1024);
 
         let sum_subset_sizes: usize = subset_sizes.iter().sum();
         let sum_universe_sizes: usize = subset_sizes.len() * universe_size;
@@ -1131,7 +1132,6 @@ mod tests {
             subset_sizes.len() * universe_size - sum_subset_sizes
         );
 
-        let clubcard = clubcard.build();
 
         let mut included = 0;
         let mut excluded = 0;
