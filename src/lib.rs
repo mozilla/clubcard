@@ -817,6 +817,10 @@ impl Clubcard {
         bincode::serialize(self).unwrap()
     }
 
+    pub fn from_bytes(&self, bytes: &[u8]) -> Self {
+        bincode::deserialize(bytes).unwrap()
+    }
+
     pub fn contains<const W: usize>(&self, item: &impl Filterable<W>) -> bool {
         let Some(meta) = self.index.get(item.shard()) else {
             return false;
