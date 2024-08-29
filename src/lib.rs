@@ -742,6 +742,8 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
     }
 }
 
+// TODO: We should have a way to say that a shard encodes |U\R| rather than |R|,
+// for the case where |R| = (1-ϵ)|U|.
 #[derive(Default, Serialize, Deserialize)]
 struct ClubcardShardMeta {
     approx_filter_offset: usize,
