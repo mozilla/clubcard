@@ -155,6 +155,23 @@ impl<const W: usize> Equation<W> {
         }
         (r.count_ones() & 1) as u8
     }
+
+    /// Computes â(z) := sum â_i z_i where â_i = a_{i + floor(s/64)}.
+    /// In other words, this is eval with the assumption that only the
+    /// limbs of z that influence the result are presented. Useful for
+    /// computing a(z) without allocating a large vector for z.
+    pub fn eval_compact(&self, z: &[u64]) -> u8 {
+        let shift = self.s % 64;
+        let mut r = 0;
+        for i in 0..min(z.len(), W) {
+            let mut tmp = z[i] >> shift;
+            if i + 1 < z.len() && shift != 0 {
+                tmp |= z[i + 1] << (64 - shift);
+            }
+            r ^= tmp & self.a[i];
+        }
+        (r.count_ones() & 1) as u8
+    }
 }
 
 /// A struct that implements Filterable can be hashed into an equation or
@@ -790,10 +807,21 @@ impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W, T>> for Clubcard 
 
         // TODO: Interleave approx_solution columns for better cache locality.
         // while querying.
+        let mut approx_filter_transpose = vec![];
+        for j in 0..approx_filter.solution[0].len() {
+            let mut row = vec![];
+            for column in &approx_filter.solution {
+                if j >= column.len() {
+                    break;
+                }
+                row.push(column[j])
+            }
+            approx_filter_transpose.push(row);
+        }
 
         Clubcard {
             index,
-            approx_filter: approx_filter.solution.clone(),
+            approx_filter: approx_filter_transpose,
             exact_filter: exact_filter.solution[0].clone(),
         }
     }
@@ -827,8 +855,41 @@ impl Clubcard {
         }
         let mut approx_eq = item.as_equation(meta.approx_filter_m);
         approx_eq.s += meta.approx_filter_offset;
-        for i in 0..max(1, meta.approx_filter_rank) {
-            if approx_eq.eval(&self.approx_filter[i]) != 0 {
+
+        // We use a 64-bit interleaved column-major encoding, like in
+        // https://arxiv.org/pdf/2109.01892 but with the additional complication
+        // that we omit some rectangles of the matrix
+        //
+        // As an example, suppose that approx_filter is a solution for a sharded ribbon filter
+        // with 3 shards of rank 3, 2 and 1 respectively. Further suppose that W=1 and each
+        // shard has m = 64. Then the full solution is a 192 x 3 matrix M, but we omit the
+        // zero blocks M[128..191][1] and M[64..191][2].
+        //
+        // The remaining blocks are serialized in 64-bit interleaved column-major
+        // order, i.e.
+        // [ M[0..63][0],
+        //   M[0..63][1],
+        //   M[0..63][2],
+        //   M[64..127][0],
+        //   M[64..127][1],
+        //   M[128..192][0] ]
+        //
+        // To evaluate an equation in a shard of rank r, one needs to access no more than
+        // (W + 1) * r sequential elements of this array.
+        //
+        // TODO: benchmark this and other layouts
+        let limb = approx_eq.s / 64;
+        for j in 0..max(1, meta.approx_filter_rank) {
+            // would be nice to do [0u64; W+1] here, but it requires #![feature(generic_const_exprs)]
+            let mut z = vec![];
+            for i in limb..min(self.approx_filter.len(), limb + W + 1) {
+                if j >= self.approx_filter[i].len() {
+                    break;
+                }
+                // For shards with small rank, this is a small stride.
+                z.push(self.approx_filter[i][j]);
+            }
+            if approx_eq.eval_compact(&z) != 0 {
                 return false;
             }
         }
