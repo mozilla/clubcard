@@ -248,7 +248,7 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// Queue `item` for insertion into the ribbon (if it is contained in the provided filter).
     pub fn insert(&mut self, item: T) {
         if let Some(filter) = self.filter {
-            if Ok(true) == filter.contains(&item) {
+            if filter.contains(&item) {
                 self.items.push(item);
             }
         } else {
@@ -546,17 +546,28 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
         let solution = self.solve();
         // construct the index---a map from a block identifier to that
         // block's offset in the solution vector.
-        let mut index = FilterIndex::new();
+        let mut index = ShardedRibbonFilterIndex::new();
         let mut offset = 0;
         for i in 0..self.blocks.len() {
-            let errors = self.blocks[i]
+            let include_errors = self.blocks[i]
                 .errors
                 .iter()
-                .map(|x| x.discriminant().to_vec())
+                .filter_map(|x| x.included().then(|| x.discriminant().to_vec()))
+                .collect();
+            let exclude_errors = self.blocks[i]
+                .errors
+                .iter()
+                .filter_map(|x| (!x.included()).then(|| x.discriminant().to_vec()))
                 .collect();
             index.insert(
                 self.blocks[i].id.clone(),
-                (offset, self.blocks[i].m, self.blocks[i].rank, errors),
+                (
+                    offset,
+                    self.blocks[i].m,
+                    self.blocks[i].rank,
+                    include_errors,
+                    exclude_errors,
+                ),
             );
             offset += self.blocks[i].rows.len();
         }
@@ -570,19 +581,20 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
 }
 
 /// Metadata
-type FilterIndex = BTreeMap<
+type ShardedRibbonFilterIndex = BTreeMap<
     /* block id */ Vec<u8>,
     (
         /* offset */ usize,
         /* m */ usize,
         /* rank */ usize,
-        /* errors */ Vec<Vec<u8>>,
+        /* include errors */ Vec<Vec<u8>>,
+        /* exclude errors */ Vec<Vec<u8>>,
     ),
 >;
 
 /// A solution to a ribbon system, along with metadata necessary for querying it.
 pub struct ShardedRibbonFilter<const W: usize, T: Filterable<W>, ApproxOrExact> {
-    index: FilterIndex,
+    index: ShardedRibbonFilterIndex,
     solution: Vec<Vec<u64>>,
     phantom: std::marker::PhantomData<T>,
     phantom2: std::marker::PhantomData<ApproxOrExact>,
@@ -602,50 +614,35 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
     // (we have membership labels at build time, which this function doesn't
     // depend on).
     /// Check if this filter contains the given item in the given block.
-    pub fn contains(&self, item: &T) -> Result<bool, ()> {
-        let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
-            return Ok(false);
+    pub fn contains(&self, item: &T) -> bool {
+        let Some((offset, m, rank, include_errors, exclude_errors)) = self.index.get(item.shard())
+        else {
+            return false;
         };
-        for error in errors {
+        for error in include_errors {
             if error == item.discriminant() {
-                return Err(());
+                return true;
+            }
+        }
+        for error in exclude_errors {
+            if error == item.discriminant() {
+                return false;
             }
         }
         // Empty blocks do not contain anything,
         // despite having inner product 0 with everything.
         if *m == 0 {
-            return Ok(false);
+            return false;
         }
         let mut eq = item.as_equation(*m);
         eq.s += *offset;
         // eq.b is irrelevant here. We won't know it when querying.
         for i in 0..max(1, *rank) {
             if eq.eval(&self.solution[i]) != 0 {
-                return Ok(false);
+                return false;
             }
         }
-        Ok(true)
-    }
-
-    /// The same computation as `contains`, but it returns the vector of outputs instead of whether
-    /// that vector was zero.
-    #[cfg(test)]
-    pub fn eval(&self, item: &T) -> Result<Vec<u8>, ()> {
-        let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
-            return Ok(vec![]);
-        };
-        for error in errors {
-            if error == item.discriminant() {
-                return Err(());
-            }
-        }
-        let mut eq = item.as_equation(*m);
-        eq.s += *offset;
-        let mut out = vec![];
-        for i in 0..max(1, *rank) {
-            out.push(eq.eval(&self.solution[i]));
-        }
-        Ok(out)
+        true
     }
 
     /// Helper function for computing the bit size of the solution matrix.
@@ -663,19 +660,11 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
     }
 }
 
-/// Metadata
-type PreFilter =
-    BTreeMap</* block id */ Vec<u8>, /* item discriminants */ Vec<(Vec<u8>, bool)>>;
-
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
 ///     + a "prefilter" that handles exceptions...
 /// TODO: Merge the three BTreeMaps.
 /// TODO: Serialization!
 pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
-    /// A (typically small) collection of items that are not encoded in the main filter.
-    /// Pulling these items aside lets us avoid repeating the filter construction process
-    /// in the event that the linear system for the exact filter is inconsistent.
-    pre_filter: PreFilter,
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
     approx_filter: Option<ShardedRibbonFilter<W, T, Approximate>>,
@@ -687,7 +676,6 @@ pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
 impl<const W: usize, T: Filterable<W>> Default for ClubcardBuilder<W, T> {
     fn default() -> Self {
         ClubcardBuilder {
-            pre_filter: Default::default(),
             approx_filter: None,
             exact_filter: None,
         }
@@ -708,48 +696,62 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
     }
 
     pub fn collect_approx_ribbons(&mut self, ribbons: Vec<ApproximateRibbon<W, T>>) {
-        for ribbon in &ribbons {
-            // XXX avoid copies?
-            let errors = ribbon
-                .errors
-                .iter()
-                .map(|x| (x.discriminant().to_vec(), x.included()))
-                .collect();
-            self.pre_filter.insert(ribbon.id.clone(), errors);
-        }
         self.approx_filter = Some(ShardedRibbonFilter::from(ribbons));
     }
 
     pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Exact>>) {
-        for ribbon in &ribbons {
-            // XXX avoid copies?
-            let errors = ribbon
-                .errors
-                .iter()
-                .map(|x| (x.discriminant().to_vec(), x.included()))
-                .collect();
-            if let Some(stash) = self.pre_filter.get_mut(&ribbon.id) {
-                stash.extend(errors);
-            } else {
-                self.pre_filter.insert(ribbon.id.clone(), errors);
-            }
-        }
         self.exact_filter = Some(ShardedRibbonFilter::from(ribbons));
     }
 
     pub fn build(self) -> Clubcard {
-        self.into()
-    }
+        let mut index: ClubcardIndex = BTreeMap::new();
 
-    /// Helper function for computing the bit size of the solution matrix.
-    /// TODO: remove this
-    pub fn size(&self) -> usize {
-        self.pre_filter
-            .values()
-            .map(|x| x.iter().map(|y| (y.0.len() + 1) * 8).sum::<usize>())
-            .sum::<usize>()
-            + self.approx_filter.as_ref().unwrap().size()
-            + self.exact_filter.as_ref().unwrap().size()
+        assert!(self.approx_filter.is_some());
+        let approx_filter = self.approx_filter.unwrap();
+        for (shard, (offset, m, rank, include_errors, exclude_errors)) in approx_filter.index {
+            let mut meta = ClubcardShardMeta::default();
+            meta.approx_filter_offset = offset;
+            meta.approx_filter_m = m;
+            meta.approx_filter_rank = rank;
+            meta.include_errors = include_errors;
+            assert!(exclude_errors.len() == 0);
+            meta.exclude_errors = exclude_errors;
+            index.insert(shard, meta);
+        }
+
+        assert!(self.exact_filter.is_some());
+        let mut exact_filter = self.exact_filter.unwrap();
+        for (shard, (offset, m, rank, include_errors, exclude_errors)) in exact_filter.index {
+            assert!(rank == 0);
+            let meta = index.get_mut(&shard).unwrap();
+            meta.exact_filter_offset = offset;
+            meta.exact_filter_m = m;
+            meta.include_errors.extend(include_errors);
+            meta.exclude_errors.extend(exclude_errors);
+        }
+
+        // Transpose the approximate filter solution for better cache locality while querying.
+        let mut approx_filter_transpose = vec![];
+        for i in 0..approx_filter.solution[0].len() {
+            let mut row = vec![];
+            for column in &approx_filter.solution {
+                if i >= column.len() {
+                    break;
+                }
+                row.push(column[i])
+            }
+            approx_filter_transpose.push(row);
+        }
+        let approx_filter = approx_filter_transpose;
+
+        assert!(exact_filter.solution.len() == 1);
+        let exact_filter = exact_filter.solution.pop().unwrap();
+
+        Clubcard {
+            index,
+            approx_filter,
+            exact_filter,
+        }
     }
 }
 
@@ -775,55 +777,7 @@ pub struct Clubcard {
 
 impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W, T>> for Clubcard {
     fn from(builder: ClubcardBuilder<W, T>) -> Clubcard {
-        let mut index: ClubcardIndex = BTreeMap::new();
-        for (shard, errors) in builder.pre_filter.iter() {
-            let mut shard_meta = ClubcardShardMeta::default();
-            let include_errors = errors.iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
-            let exclude_errors = errors
-                .iter()
-                .filter(|x| !x.1)
-                .map(|x| x.0.clone())
-                .collect();
-            shard_meta.include_errors = include_errors;
-            shard_meta.exclude_errors = exclude_errors;
-            index.insert(shard.clone(), shard_meta);
-        }
-
-        let approx_filter = builder.approx_filter.as_ref().unwrap();
-        for (shard, (offset, m, rank, _)) in &approx_filter.index {
-            let meta = index.get_mut(shard).unwrap();
-            meta.approx_filter_offset = *offset;
-            meta.approx_filter_m = *m;
-            meta.approx_filter_rank = *rank;
-        }
-
-        let exact_filter = builder.exact_filter.as_ref().unwrap();
-        for (shard, (offset, m, rank, _)) in &exact_filter.index {
-            assert!(*rank == 0);
-            let meta = index.get_mut(shard).unwrap();
-            meta.exact_filter_offset = *offset;
-            meta.exact_filter_m = *m;
-        }
-
-        // TODO: Interleave approx_solution columns for better cache locality.
-        // while querying.
-        let mut approx_filter_transpose = vec![];
-        for j in 0..approx_filter.solution[0].len() {
-            let mut row = vec![];
-            for column in &approx_filter.solution {
-                if j >= column.len() {
-                    break;
-                }
-                row.push(column[j])
-            }
-            approx_filter_transpose.push(row);
-        }
-
-        Clubcard {
-            index,
-            approx_filter: approx_filter_transpose,
-            exact_filter: exact_filter.solution[0].clone(),
-        }
+        builder.build()
     }
 }
 
@@ -1040,19 +994,17 @@ mod tests {
         let ribbon = ExactRibbon::from(builder);
         let filter = ShardedRibbonFilter::from(vec![ribbon]);
         for i in 0usize..n {
-            assert!(filter.eval(&Equation::std(i)) == Ok(vec![(i % 2) as u8]));
+            let eq = Equation::<1>::std(i);
+            assert!(eq.eval(&filter.solution[0]) == (i % 2) as u8);
         }
     }
 
     #[test]
     fn test_solve_empty() {
-        let n = 0;
         let builder = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
         let ribbon = ApproximateRibbon::from(builder);
         let filter = ShardedRibbonFilter::from(vec![ribbon]);
-        for i in 0usize..n {
-            assert!(filter.eval(&Equation::std(i)) == Ok(vec![0]));
-        }
+        assert!(!filter.contains(&Equation::std(0)));
     }
 
     #[test]
@@ -1175,7 +1127,6 @@ mod tests {
             sum_subset_sizes,
             subset_sizes.len() * universe_size - sum_subset_sizes
         );
-
 
         let mut included = 0;
         let mut excluded = 0;
