@@ -182,7 +182,6 @@ pub trait Filterable<const W: usize> {
     ///     (1) s is uniform in {0, 1, ..., m-1},
     ///     (2) a satisfies the alignment requirement (a\[0\] & 1 == 1) but is otherwise uniformly random,
     ///     (3) b is zero if and only if the item should be in the filter, and b = 1 otherwise.
-    /// TODO: refactor to allow b to be set during insertion.
     fn as_equation(&self, m: usize) -> Equation<W>;
 
     /// The shard that this item belongs in.
@@ -211,7 +210,7 @@ pub type ApproximateRibbon<const W: usize, T> = Ribbon<W, T, Approximate>;
 /// provided, then only items that are contained in the filter will be inserted.
 pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
     /// block id.
-    pub id: Vec<u8>, /* TODO: maybe make this an argument to build_approximate and build_exact */
+    pub id: Vec<u8>,
     /// items to be inserted.
     pub items: Vec<T>,
     /// filter for pruning insertions.
@@ -265,7 +264,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
     for ApproximateRibbon<W, T>
 {
     /// Denote the inserted set by R and the universe by U.
-    /// The ribbon returned by `build_approximate` encodes a function f : U -> {0, 1} where
+    /// The ribbon returned by ApproximateRibbon::from encodes a function f : U -> {0, 1} where
     /// f(x) = 0 if and only if x is in R union S where S is a (random) subset of U \ R of size
     /// ~|R|. In other words, the ribbon solves the approximate membership query problem with a
     /// false positive rate roughly 2^-r = |R| / (|U| - |R|).
@@ -293,7 +292,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
 }
 
 /// Denote the inserted set by R and the universe by U.
-/// The ribbon returned by `build_exact` encodes the function "f(x) = 0 iff x in R". The size
+/// The ribbon returned by ExactRibbon::from encodes the function "f(x) = 0 iff x in R". The size
 /// of this ribbon is proportional to |U|. In the typical use case, the set U is the result of
 /// filtering a larger universe with a false positive rate of 2^-r. This allows for exact
 /// encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
@@ -609,10 +608,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 }
 
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, ApproxOrExact> {
-    // TODO: This should probably take an &impl Filterable. It would be nice
-    // to have different structs for items at build time and at query time
-    // (we have membership labels at build time, which this function doesn't
-    // depend on).
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
         let Some((offset, m, rank, include_errors, exclude_errors)) = self.index.get(item.shard())
@@ -636,19 +631,13 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
         }
         let mut eq = item.as_equation(*m);
         eq.s += *offset;
-        // eq.b is irrelevant here. We won't know it when querying.
+        // eq.b is irrelevant here. We don't know it when querying.
         for i in 0..max(1, *rank) {
             if eq.eval(&self.solution[i]) != 0 {
                 return false;
             }
         }
         true
-    }
-
-    /// Helper function for computing the bit size of the solution matrix.
-    /// TODO: remove this
-    pub fn size(&self) -> usize {
-        64 * self.solution.iter().map(|x| x.len()).sum::<usize>()
     }
 }
 
@@ -662,8 +651,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
 ///     + a "prefilter" that handles exceptions...
-/// TODO: Merge the three BTreeMaps.
-/// TODO: Serialization!
 pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
