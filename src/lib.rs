@@ -787,11 +787,6 @@ impl Clubcard {
                 return true;
             }
         }
-        for error in &meta.exclude_errors {
-            if error == item.discriminant() {
-                return false;
-            }
-        }
         if meta.approx_filter_m == 0 {
             return false;
         }
@@ -843,7 +838,16 @@ impl Clubcard {
         }
         let mut exact_eq = item.as_equation(meta.exact_filter_m);
         exact_eq.s += meta.exact_filter_offset;
-        exact_eq.eval(&self.exact_filter) == 0
+        if exact_eq.eval(&self.exact_filter) == 0 {
+            for error in &meta.exclude_errors {
+                if error == item.discriminant() {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
