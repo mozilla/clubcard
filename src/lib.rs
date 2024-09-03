@@ -85,7 +85,7 @@ impl<const W: usize> Equation<W> {
         Equation { s: i, a, b: 0 }
     }
 
-    /// Construct an random aligned equation using given distribution for s.
+    /// Construct an random aligned equation using the given distribution for s.
     #[cfg(test)]
     pub fn rand(s_dist: &impl Distribution<usize>) -> Self {
         let mut rng = rand::thread_rng();
@@ -188,7 +188,7 @@ pub trait Filterable<const W: usize> {
     fn shard(&self) -> &[u8];
 
     /// A unique identifier for this item. If this item cannot be inserted into the linear system,
-    /// then we will store it its `included()` status in a secondary retrieval mechanism keyed by
+    /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
     /// `discriminant()`.
     fn discriminant(&self) -> &[u8];
 
@@ -291,12 +291,12 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
     }
 }
 
-/// Denote the inserted set by R and the universe by U.
-/// The ribbon returned by ExactRibbon::from encodes the function "f(x) = 0 iff x in R". The size
-/// of this ribbon is proportional to |U|. In the typical use case, the set U is the result of
-/// filtering a larger universe with a false positive rate of 2^-r. This allows for exact
-/// encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
 impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for ExactRibbon<W, T> {
+    /// Denote the inserted set by R and the universe by U.
+    /// The ribbon returned by ExactRibbon::from encodes the function "f(x) = 0 iff x in R". The
+    /// size of this ribbon is proportional to |U|. In the typical use case, the set U is the
+    /// result of filtering a larger universe with a false positive rate of 2^-r. This allows for
+    /// exact encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
         let mut out = ExactRibbon::new(&builder.id, builder.items.len());
@@ -478,7 +478,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
 
 /// Helper struct for building block systems. Don't construct this
 /// directly, just do `ShardedRibbonFilter::from(vec![r1, r2, r3]);`
-pub struct ShardedRibbonFilterBuilder<const W: usize, T: Filterable<W>, ApproxOrExact> {
+struct ShardedRibbonFilterBuilder<const W: usize, T: Filterable<W>, ApproxOrExact> {
     blocks: Vec<Ribbon<W, T, ApproxOrExact>>,
 }
 
@@ -650,7 +650,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 }
 
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
-///     + a "prefilter" that handles exceptions...
 pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
@@ -805,17 +804,19 @@ impl Clubcard {
         //
         // As an example, suppose that approx_filter is a solution for a sharded ribbon filter
         // with 3 shards of rank 3, 2 and 1 respectively. Further suppose that W=1 and each
-        // shard has m = 64. Then the full solution is a 192 x 3 matrix M, but we omit the
-        // zero blocks M[128..191][1] and M[64..191][2].
-        //
-        // The remaining blocks are serialized in 64-bit interleaved column-major
-        // order, i.e.
-        // [ M[0..63][0],
-        //   M[0..63][1],
-        //   M[0..63][2],
-        //   M[64..127][0],
-        //   M[64..127][1],
-        //   M[128..192][0] ]
+        // shard has m = 64. Then the full solution is a 192 x 3 matrix M with zeros in the bottom
+        // right
+        //    M = [| | |]
+        //        [| | 0]
+        //        [| 0 0].
+        // We omit the zero blocks M[128..191][1] and M[64..191][2], and serialize the remaining
+        // blocks in 64-bit interleaved column-major order, i.e.
+        // [ M[0..63, 0],
+        //   M[0..63, 1],
+        //   M[0..63, 2],
+        //   M[64..127, 0],
+        //   M[64..127, 1],
+        //   M[128..192, 0] ]
         //
         // To evaluate an equation in a shard of rank r, one needs to access no more than
         // (W + 1) * r sequential elements of this array.
