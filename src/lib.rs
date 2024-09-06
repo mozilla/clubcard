@@ -443,20 +443,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
         }
         z
     }
-
-    /// Insert the last few equations from this ribbon into `other`, and delete them from this
-    /// ribbon. This is used to slightly reduce overhead in block systems.
-    pub fn stitch(&mut self, other: &mut Ribbon<W, T, ApproxOrExact>) {
-        // TODO tune count, prove optimality, etc.
-        let count = (((64 * W) as f64) / (1.0 + self.epsilon)).round() as usize;
-
-        // Move min(self.rows.len(), count) equations from self
-        let new_len = self.rows.len().saturating_sub(count);
-        for (i, mut eq) in self.rows.drain(new_len..).enumerate() {
-            eq.s = i;
-            other.insert_equation(eq);
-        }
-    }
 }
 
 /// Helper struct for building block systems. Don't construct this
@@ -471,17 +457,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
     /// Sort ribbons by descending rank (descending simplifies indexing).
     fn sort(&mut self) {
         self.blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
-    }
-
-    /// For each pair of consecutive ribbons (A, B) try to move a few of the last equations from
-    /// A into B to fill empty rows.
-    fn stitch(&mut self) {
-        let mut slice = self.blocks.as_mut_slice();
-        for _ in 0..slice.len() - 1 {
-            let (head, tail) = slice.split_at_mut(1);
-            head[0].stitch(&mut tail[0]);
-            slice = tail;
-        }
     }
 
     /// Solve the (block) system.
@@ -506,25 +481,15 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
                 if max(1, self.blocks[j].rank) > i {
                     tail = self.blocks[j].solve(&tail);
                 }
-                // this might be needed if we reintroduce stitching
-                //else if j > 0 && max(1, self.blocks[j - 1].rank) > i {
-                //    tail = self.blocks[j].solve(&tail);
-                //    // XXX: Is this enough? Too much?
-                //    tail.truncate(2 * W);
-                //}
             }
             sols.push(tail);
         }
         sols
     }
 
-    /// Do it! Sort the blocks, stitch 'em together, solve the system, and build an index.
+    /// Do it! Sort the blocks, solve the system, and build an index.
     pub fn finalize(&mut self) -> ShardedRibbonFilter<W, T, ApproxOrExact> {
         self.sort();
-        // XXX stitching disabled since we can't currently fix a system that
-        // is made inconsistent through stitching. Not sure stitching helps much
-        // anyway. Maybe we should only use it for approximate filters?
-        //self.stitch();
         let solution = self.solve();
         // construct the index---a map from a block identifier to that
         // block's offset in the solution vector.
@@ -959,36 +924,6 @@ mod tests {
             assert!(eq.eval(&x) == eq.b);
         }
     }
-
-    //#[test]
-    //fn test_stitch_different_rank() {
-    //    let subset1_size = 1 << 10;
-    //    let subset2_size = 1 << 5;
-    //    let universe_size = 1 << 20;
-    //    let mut r1 = RibbonBuilder::new(&"A", None);
-    //    let mut r2 = RibbonBuilder::new(&"B", None);
-    //    for j in 0usize..subset1_size {
-    //        let item = CRLiteKey([0u8; 32], j.to_le_bytes().to_vec(), true);
-    //        r1.insert(item);
-    //    }
-    //    for j in 0usize..subset2_size {
-    //        let item = CRLiteKey([1u8; 32], j.to_le_bytes().to_vec(), true);
-    //        r2.insert(item);
-    //    }
-    //    //let mut r1 = r1.build_approximate(universe_size);
-    //    //let mut r2 = r2.build_approximate(universe_size);
-    //    //println!("{}", r2);
-    //    //r1.stitch(&mut r2);
-    //    //println!("{}", r2);
-    //    let filter = ShardedRibbonFilter::from(vec![
-    //        r1.build_approximate(universe_size),
-    //        r2.build_approximate(universe_size),
-    //    ]);
-    //    for j in 0usize..subset2_size {
-    //        let item = CRLiteKey([1u8; 32], j.to_le_bytes().to_vec(), true);
-    //        assert!(Ok(true) == filter.contains(&item));
-    //    }
-    //}
 
     #[test]
     fn test_clubcard() {
