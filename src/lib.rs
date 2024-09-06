@@ -1018,10 +1018,6 @@ mod tests {
         }
 
         clubcard_builder.collect_approx_ribbons(approx_ribbons);
-        println!(
-            "Approx filter size: {}kB",
-            clubcard_builder.approx_filter.as_ref().unwrap().size() / 8 / 1024
-        );
 
         let mut exact_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
@@ -1041,10 +1037,6 @@ mod tests {
         }
 
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
-        println!(
-            "Exact filter size: {}kB",
-            clubcard_builder.exact_filter.as_ref().unwrap().size() / 8 / 1024
-        );
 
         let clubcard = clubcard_builder.build();
         let size = 8 * clubcard.to_bytes().len();
