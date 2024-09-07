@@ -621,7 +621,7 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         ClubcardBuilder::default()
     }
 
-    pub fn get_approx_builder<'a>(&'a self, block: &impl AsRef<[u8]>) -> RibbonBuilder<'a, W, T> {
+    pub fn get_approx_builder(&self, block: &impl AsRef<[u8]>) -> RibbonBuilder<'static, W, T> {
         RibbonBuilder::new(block, None)
     }
 
