@@ -260,7 +260,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
             out.insert(item);
         }
         // Insertions should not fail for a homogeneous system.
-        assert!(out.errors.is_empty());
+        assert!(out.exceptions.is_empty());
         out
     }
 }
@@ -274,7 +274,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
         let mut out = ExactRibbon::new(&builder.id, builder.items.len());
-        // By inserting the included items first, we ensure that any errors that occur during
+        // By inserting the included items first, we ensure that any exceptions that occur during
         // insertion are for excluded items.
         let mut excluded = vec![];
         for item in builder.items.drain(..) {
@@ -304,7 +304,7 @@ pub struct Ribbon<const W: usize, T: Filterable<W>, ApproxOrExact> {
     /// A linear system in which each equation has s in {0, ..., m-1}
     rows: Vec<Equation<W>>,
     /// A (typically short) list of items that failed insertion
-    errors: Vec<T>,
+    exceptions: Vec<T>,
     /// Marker for whether this is an Approximate or an Exact filter.
     phantom: std::marker::PhantomData<ApproxOrExact>,
 }
@@ -313,12 +313,12 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W,
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "ribbon({:?}): m: {}, rows: {}, rank: {}, errors: {}, epsilon: {}, overhead {}",
+            "ribbon({:?}): m: {}, rows: {}, rank: {}, exceptions: {}, epsilon: {}, overhead {}",
             self.id,
             self.m,
             self.rows.len(),
             self.rank,
-            self.errors.len(),
+            self.exceptions.len(),
             self.epsilon,
             (self.rows.iter().filter(|eq| eq.is_zero()).count() as f64 / (self.rows.len() as f64))
         )
@@ -349,7 +349,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
             m,
             epsilon,
             rank,
-            errors: vec![],
+            exceptions: vec![],
             phantom: std::marker::PhantomData,
         }
     }
@@ -369,7 +369,7 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
             m,
             epsilon,
             rank: 1,
-            errors: vec![],
+            exceptions: vec![],
             phantom: std::marker::PhantomData,
         }
     }
@@ -382,7 +382,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
         assert!(eq.is_zero() || eq.a[0] & 1 == 1);
         let rv = self.insert_equation(eq);
         if !rv {
-            self.errors.push(item)
+            self.exceptions.push(item)
         }
         rv
     }
@@ -497,13 +497,13 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
         let mut index = ShardedRibbonFilterIndex::new();
         let mut offset = 0;
         for block in &self.blocks {
-            let errors = block
-                .errors
+            let exceptions = block
+                .exceptions
                 .iter()
                 .filter(|&x| (!x.included()))
                 .map(|x| x.discriminant().to_vec())
                 .collect();
-            index.insert(block.id.clone(), (offset, block.m, block.rank, errors));
+            index.insert(block.id.clone(), (offset, block.m, block.rank, exceptions));
             offset += block.rows.len();
         }
         ShardedRibbonFilter {
@@ -522,7 +522,7 @@ type ShardedRibbonFilterIndex = BTreeMap<
         /* offset */ usize,
         /* m */ usize,
         /* rank */ usize,
-        /* exclude errors */ Vec<Vec<u8>>,
+        /* exclude exceptions */ Vec<Vec<u8>>,
     ),
 >;
 
@@ -545,7 +545,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Approximate> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
+        let Some((offset, m, rank, exceptions)) = self.index.get(item.shard()) else {
             return false;
         };
         // Empty blocks do not contain anything,
@@ -564,8 +564,8 @@ impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Ap
                 return false;
             }
         }
-        for error in errors {
-            if error == item.discriminant() {
+        for exception in exceptions {
+            if exception == item.discriminant() {
                 return false;
             }
         }
@@ -626,26 +626,26 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
-        for (shard, (offset, m, rank, errors)) in approx_filter.index {
+        for (shard, (offset, m, rank, exceptions)) in approx_filter.index {
             let meta = ClubcardShardMeta {
                 approx_filter_offset: offset,
                 approx_filter_m: m,
                 approx_filter_rank: rank,
                 exact_filter_offset: 0,
                 exact_filter_m: 0,
-                errors,
+                exceptions,
             };
             index.insert(shard, meta);
         }
 
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
-        for (shard, (offset, m, rank, errors)) in exact_filter.index {
+        for (shard, (offset, m, rank, exceptions)) in exact_filter.index {
             assert!(rank == 1);
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
-            meta.errors.extend(errors);
+            meta.exceptions.extend(exceptions);
         }
 
         assert!(exact_filter.solution.len() == 1);
@@ -668,7 +668,7 @@ struct ClubcardShardMeta {
     approx_filter_rank: usize,
     exact_filter_offset: usize,
     exact_filter_m: usize,
-    errors: Vec<Vec<u8>>,
+    exceptions: Vec<Vec<u8>>,
 }
 
 type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardShardMeta>;
@@ -690,10 +690,10 @@ impl fmt::Display for Clubcard {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let approx_size = 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>();
         let exact_size = 8 * self.exact_filter.len();
-        let errors = self
+        let exceptions = self
             .index
             .values()
-            .map(|meta| meta.errors.len())
+            .map(|meta| meta.exceptions.len())
             .sum::<usize>();
         writeln!(
             f,
@@ -702,7 +702,7 @@ impl fmt::Display for Clubcard {
             approx_size,
             exact_size
         )?;
-        writeln!(f, "- Errors: {}", errors)?;
+        writeln!(f, "- exceptions: {}", exceptions)?;
         writeln!(f, "- Serialized size: {}", self.to_bytes().len())
     }
 }
@@ -745,8 +745,8 @@ impl Clubcard {
             return false;
         }
 
-        for error in &meta.errors {
-            if error == item.discriminant() {
+        for exception in &meta.exceptions {
+            if exception == item.discriminant() {
                 return false;
             }
         }
