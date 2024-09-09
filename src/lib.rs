@@ -554,7 +554,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, ApproxOrExact> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, exclude_errors)) = self.index.get(item.shard())
+        let Some((offset, m, rank, errors)) = self.index.get(item.shard())
         else {
             return false;
         };
@@ -571,7 +571,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
                 return false;
             }
         }
-        for error in exclude_errors {
+        for error in errors {
             if error == item.discriminant() {
                 return false;
             }
@@ -633,24 +633,24 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
-        for (shard, (offset, m, rank, exclude_errors)) in approx_filter.index {
+        for (shard, (offset, m, rank, errors)) in approx_filter.index {
             let mut meta = ClubcardShardMeta::default();
             meta.approx_filter_offset = offset;
             meta.approx_filter_m = m;
             meta.approx_filter_rank = rank;
-            assert!(exclude_errors.len() == 0);
-            meta.exclude_errors = exclude_errors;
+            assert!(errors.len() == 0);
+            meta.errors = errors;
             index.insert(shard, meta);
         }
 
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
-        for (shard, (offset, m, rank, exclude_errors)) in exact_filter.index {
+        for (shard, (offset, m, rank, errors)) in exact_filter.index {
             assert!(rank == 0);
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
-            meta.exclude_errors.extend(exclude_errors);
+            meta.errors.extend(errors);
         }
 
         assert!(exact_filter.solution.len() == 1);
@@ -673,7 +673,7 @@ struct ClubcardShardMeta {
     approx_filter_rank: usize,
     exact_filter_offset: usize,
     exact_filter_m: usize,
-    exclude_errors: Vec<Vec<u8>>,
+    errors: Vec<Vec<u8>>,
 }
 
 type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardShardMeta>;
@@ -688,6 +688,17 @@ pub struct Clubcard {
 impl<const W: usize, T: Filterable<W>> From<ClubcardBuilder<W, T>> for Clubcard {
     fn from(builder: ClubcardBuilder<W, T>) -> Clubcard {
         builder.build()
+    }
+}
+
+impl fmt::Display for Clubcard {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let approx_size = 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>();
+        let exact_size = 8 * self.exact_filter.len();
+        let errors = self.index.iter().map(|(_, meta)| meta.errors.len()).sum::<usize>();
+        writeln!(f, "Clubcard of size {} ({} + {})", approx_size + exact_size, approx_size, exact_size)?;
+        writeln!(f, "- Errors: {}", errors)?;
+        writeln!(f, "- Serialized size: {}", self.to_bytes().len())
     }
 }
 
@@ -729,7 +740,7 @@ impl Clubcard {
             return false;
         }
 
-        for error in &meta.exclude_errors {
+        for error in &meta.errors {
             if error == item.discriminant() {
                 return false;
             }
