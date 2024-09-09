@@ -340,7 +340,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
         } else {
             (((universe_size - subset_size) as f64) / (subset_size as f64))
                 .log2()
-                .round() as usize
+                .floor() as usize
         };
 
         Ribbon {
