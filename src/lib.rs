@@ -254,23 +254,14 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
     /// The size of this ribbon is proportional to r|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ApproximateRibbon<W, T> {
         assert!(builder.items.len() <= builder.universe_size);
-        // If the set is very small, we'll just tag each element as an encoding error
-        // so that it gets inserted into a separate retrieval structure later.
-        if builder.items.len() < 16 {
-            // XXX Tune this.
-            let mut out = ApproximateRibbon::new(&builder.id, 0, 0);
-            out.errors = builder.items;
-            out
-        } else {
-            let mut out =
-                ApproximateRibbon::new(&builder.id, builder.items.len(), builder.universe_size);
-            for item in builder.items.drain(..) {
-                out.insert(item);
-            }
-            // Insertions should not fail for a homogeneous system.
-            assert!(out.errors.is_empty());
-            out
+        let mut out =
+            ApproximateRibbon::new(&builder.id, builder.items.len(), builder.universe_size);
+        for item in builder.items.drain(..) {
+            out.insert(item);
         }
+        // Insertions should not fail for a homogeneous system.
+        assert!(out.errors.is_empty());
+        out
     }
 }
 
@@ -283,7 +274,17 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
         let mut out = ExactRibbon::new(&builder.id, builder.items.len());
+        // By inserting the included items first, we ensure that any errors that occur during
+        // insertion are for excluded items.
+        let mut excluded = vec![];
         for item in builder.items.drain(..) {
+            if item.included() {
+                out.insert(item);
+            } else {
+                excluded.push(item);
+            }
+        }
+        for item in excluded.drain(..) {
             out.insert(item);
         }
         out
@@ -495,28 +496,24 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
         // block's offset in the solution vector.
         let mut index = ShardedRibbonFilterIndex::new();
         let mut offset = 0;
-        for i in 0..self.blocks.len() {
-            let include_errors = self.blocks[i]
+        for block in &self.blocks {
+            let errors = block
                 .errors
                 .iter()
-                .filter_map(|x| x.included().then(|| x.discriminant().to_vec()))
-                .collect();
-            let exclude_errors = self.blocks[i]
-                .errors
-                .iter()
-                .filter_map(|x| (!x.included()).then(|| x.discriminant().to_vec()))
+                .filter_map(|x| {
+                    (!x.included()).then(|| x.discriminant().to_vec())
+                })
                 .collect();
             index.insert(
-                self.blocks[i].id.clone(),
+                block.id.clone(),
                 (
                     offset,
-                    self.blocks[i].m,
-                    self.blocks[i].rank,
-                    include_errors,
-                    exclude_errors,
+                    block.m,
+                    block.rank,
+                    errors,
                 ),
             );
-            offset += self.blocks[i].rows.len();
+            offset += block.rows.len();
         }
         ShardedRibbonFilter {
             index,
@@ -534,7 +531,6 @@ type ShardedRibbonFilterIndex = BTreeMap<
         /* offset */ usize,
         /* m */ usize,
         /* rank */ usize,
-        /* include errors */ Vec<Vec<u8>>,
         /* exclude errors */ Vec<Vec<u8>>,
     ),
 >;
@@ -558,20 +554,10 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, ApproxOrExact> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, include_errors, exclude_errors)) = self.index.get(item.shard())
+        let Some((offset, m, rank, exclude_errors)) = self.index.get(item.shard())
         else {
             return false;
         };
-        for error in include_errors {
-            if error == item.discriminant() {
-                return true;
-            }
-        }
-        for error in exclude_errors {
-            if error == item.discriminant() {
-                return false;
-            }
-        }
         // Empty blocks do not contain anything,
         // despite having inner product 0 with everything.
         if *m == 0 {
@@ -582,6 +568,11 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
         // eq.b is irrelevant here. We don't know it when querying.
         for i in 0..max(1, *rank) {
             if eq.eval(&self.solution[i]) != 0 {
+                return false;
+            }
+        }
+        for error in exclude_errors {
+            if error == item.discriminant() {
                 return false;
             }
         }
@@ -642,12 +633,11 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
-        for (shard, (offset, m, rank, include_errors, exclude_errors)) in approx_filter.index {
+        for (shard, (offset, m, rank, exclude_errors)) in approx_filter.index {
             let mut meta = ClubcardShardMeta::default();
             meta.approx_filter_offset = offset;
             meta.approx_filter_m = m;
             meta.approx_filter_rank = rank;
-            meta.include_errors = include_errors;
             assert!(exclude_errors.len() == 0);
             meta.exclude_errors = exclude_errors;
             index.insert(shard, meta);
@@ -655,12 +645,11 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
-        for (shard, (offset, m, rank, include_errors, exclude_errors)) in exact_filter.index {
+        for (shard, (offset, m, rank, exclude_errors)) in exact_filter.index {
             assert!(rank == 0);
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
-            meta.include_errors.extend(include_errors);
             meta.exclude_errors.extend(exclude_errors);
         }
 
@@ -684,7 +673,6 @@ struct ClubcardShardMeta {
     approx_filter_rank: usize,
     exact_filter_offset: usize,
     exact_filter_m: usize,
-    include_errors: Vec<Vec<u8>>,
     exclude_errors: Vec<Vec<u8>>,
 }
 
@@ -716,12 +704,6 @@ impl Clubcard {
         let Some(meta) = self.index.get(item.shard()) else {
             return false;
         };
-
-        for error in &meta.include_errors {
-            if error == item.discriminant() {
-                return true;
-            }
-        }
 
         if meta.approx_filter_m == 0 {
             return false;
