@@ -200,6 +200,9 @@ pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
     pub filter: Option<&'a ShardedRibbonFilter<W, T, Approximate>>,
     /// size of the universe that contains self.items
     universe_size: usize,
+    /// Whether queries against this ribbon indicate membership in R (inverted = false) or
+    /// membership in U \ R (inverted = true).
+    inverted: bool,
 }
 
 impl<'a, const W: usize, T: Filterable<W>> fmt::Display for RibbonBuilder<'a, W, T> {
@@ -224,6 +227,7 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
             items: vec![],
             filter,
             universe_size: 0,
+            inverted: false,
         }
     }
 
@@ -254,14 +258,18 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
     /// The size of this ribbon is proportional to r|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ApproximateRibbon<W, T> {
         assert!(builder.items.len() <= builder.universe_size);
-        let mut out =
-            ApproximateRibbon::new(&builder.id, builder.items.len(), builder.universe_size);
-        for item in builder.items.drain(..) {
-            out.insert(item);
+        if builder.items.len() == builder.universe_size {
+            ApproximateRibbon::new(&builder.id, 0, builder.universe_size, !builder.inverted)
+        } else {
+            let mut out =
+                ApproximateRibbon::new(&builder.id, builder.items.len(), builder.universe_size, builder.inverted);
+            for item in builder.items.drain(..) {
+                out.insert(item);
+            }
+            // Insertions should not fail for a homogeneous system.
+            assert!(out.exceptions.is_empty());
+            out
         }
-        // Insertions should not fail for a homogeneous system.
-        assert!(out.exceptions.is_empty());
-        out
     }
 }
 
@@ -273,7 +281,7 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     /// exact encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
-        let mut out = ExactRibbon::new(&builder.id, builder.items.len());
+        let mut out = ExactRibbon::new(&builder.id, builder.items.len(), builder.inverted);
         // By inserting the included items first, we ensure that any exceptions that occur during
         // insertion are for excluded items.
         let mut excluded = vec![];
@@ -305,6 +313,9 @@ pub struct Ribbon<const W: usize, T: Filterable<W>, ApproxOrExact> {
     rows: Vec<Equation<W>>,
     /// A (typically short) list of items that failed insertion
     exceptions: Vec<T>,
+    /// Whether queries against this ribbon indicate membership in R (inverted = false) or
+    /// membership in U \ R (inverted = true).
+    inverted: bool,
     /// Marker for whether this is an Approximate or an Exact filter.
     phantom: std::marker::PhantomData<ApproxOrExact>,
 }
@@ -328,7 +339,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W,
 impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
-    pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize) -> Self {
+    pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize, inverted: bool) -> Self {
         assert!(subset_size <= universe_size);
 
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
@@ -350,6 +361,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
             epsilon,
             rank,
             exceptions: vec![],
+            inverted,
             phantom: std::marker::PhantomData,
         }
     }
@@ -358,7 +370,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
 impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
-    pub fn new(id: &impl AsRef<[u8]>, size: usize) -> Self {
+    pub fn new(id: &impl AsRef<[u8]>, size: usize, inverted: bool) -> Self {
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
         let epsilon = 0.033;
         let m = ((1.0 + epsilon) * (size as f64)).floor() as usize;
@@ -370,6 +382,7 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
             epsilon,
             rank: 1,
             exceptions: vec![],
+            inverted,
             phantom: std::marker::PhantomData,
         }
     }
@@ -503,7 +516,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
                 .filter(|&x| (!x.included()))
                 .map(|x| x.discriminant().to_vec())
                 .collect();
-            index.insert(block.id.clone(), (offset, block.m, block.rank, exceptions));
+            index.insert(block.id.clone(), (offset, block.m, block.rank, exceptions, block.inverted));
             offset += block.rows.len();
         }
         ShardedRibbonFilter {
@@ -523,6 +536,7 @@ type ShardedRibbonFilterIndex = BTreeMap<
         /* m */ usize,
         /* rank */ usize,
         /* exclude exceptions */ Vec<Vec<u8>>,
+        /* inverted */ bool,
     ),
 >;
 
@@ -545,31 +559,31 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Approximate> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, exceptions)) = self.index.get(item.shard()) else {
+        let Some((offset, m, rank, exceptions, inverted)) = self.index.get(item.shard()) else {
             return false;
         };
         // Empty blocks do not contain anything,
         // despite having inner product 0 with everything.
         if *m == 0 {
-            return false;
+            return false ^ inverted;
         }
         if *rank == 0 {
-            return true;
+            return true ^ inverted;
         }
         let mut eq = item.as_equation(*m);
         eq.s += *offset;
         // eq.b is irrelevant here. We don't know it when querying.
         for i in 0..*rank {
             if eq.eval(&self.solution[i]) != 0 {
-                return false;
+                return false ^ inverted;
             }
         }
         for exception in exceptions {
             if exception == item.discriminant() {
-                return false;
+                return false ^ inverted;
             }
         }
-        true
+        true ^ inverted
     }
 }
 
@@ -626,13 +640,15 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
-        for (shard, (offset, m, rank, exceptions)) in approx_filter.index {
+        for (shard, (offset, m, rank, exceptions, inverted)) in approx_filter.index {
             let meta = ClubcardShardMeta {
                 approx_filter_offset: offset,
                 approx_filter_m: m,
                 approx_filter_rank: rank,
+                approx_filter_inverted: inverted,
                 exact_filter_offset: 0,
                 exact_filter_m: 0,
+                exact_filter_inverted: false,
                 exceptions,
             };
             index.insert(shard, meta);
@@ -640,11 +656,12 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
-        for (shard, (offset, m, rank, exceptions)) in exact_filter.index {
+        for (shard, (offset, m, rank, exceptions, inverted)) in exact_filter.index {
             assert!(rank == 1);
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
+            meta.exact_filter_inverted = inverted;
             meta.exceptions.extend(exceptions);
         }
 
@@ -666,8 +683,10 @@ struct ClubcardShardMeta {
     approx_filter_offset: usize,
     approx_filter_m: usize,
     approx_filter_rank: usize,
+    approx_filter_inverted: bool,
     exact_filter_offset: usize,
     exact_filter_m: usize,
+    exact_filter_inverted: bool,
     exceptions: Vec<Vec<u8>>,
 }
 
@@ -722,7 +741,7 @@ impl Clubcard {
         };
 
         if meta.approx_filter_m == 0 {
-            return false;
+            return false ^ meta.approx_filter_inverted;
         }
 
         if meta.approx_filter_rank > 0 {
@@ -731,25 +750,25 @@ impl Clubcard {
 
             for i in 0..meta.approx_filter_rank {
                 if approx_eq.eval(&self.approx_filter[i]) != 0 {
-                    return false;
+                    return false ^ meta.approx_filter_inverted;
                 }
             }
         }
 
         if meta.exact_filter_m == 0 {
-            return false;
+            return false ^ meta.exact_filter_inverted;
         }
 
         let mut exact_eq = item.as_equation(meta.exact_filter_m);
         exact_eq.s += meta.exact_filter_offset;
 
         if exact_eq.eval(&self.exact_filter) != 0 {
-            return false;
+            return false ^ meta.exact_filter_inverted;
         }
 
         for exception in &meta.exceptions {
             if exception == item.discriminant() {
-                return false;
+                return false ^ meta.exact_filter_inverted;
             }
         }
 
