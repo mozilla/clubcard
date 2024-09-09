@@ -368,7 +368,7 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
             rows: vec![Equation::zero(); m],
             m,
             epsilon,
-            rank: 0,
+            rank: 1,
             errors: vec![],
             phantom: std::marker::PhantomData,
         }
@@ -475,11 +475,11 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
             return vec![];
         };
         let mut sols = vec![];
-        for i in 0..max(1, first.rank) {
+        for i in 0..first.rank {
             // Back substitution across blocks.
             let mut tail = vec![];
             for j in (0..self.blocks.len()).rev() {
-                if max(1, self.blocks[j].rank) > i {
+                if self.blocks[j].rank > i {
                     tail = self.blocks[j].solve(&tail);
                 }
             }
@@ -542,7 +542,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
     }
 }
 
-impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, ApproxOrExact> {
+impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Approximate> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
         let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
@@ -553,10 +553,13 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, 
         if *m == 0 {
             return false;
         }
+        if *rank == 0 {
+            return true;
+        }
         let mut eq = item.as_equation(*m);
         eq.s += *offset;
         // eq.b is irrelevant here. We don't know it when querying.
-        for i in 0..max(1, *rank) {
+        for i in 0..*rank {
             if eq.eval(&self.solution[i]) != 0 {
                 return false;
             }
@@ -638,7 +641,7 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
         for (shard, (offset, m, rank, errors)) in exact_filter.index {
-            assert!(rank == 0);
+            assert!(rank == 1);
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
@@ -725,7 +728,7 @@ impl Clubcard {
         let mut approx_eq = item.as_equation(meta.approx_filter_m);
         approx_eq.s += meta.approx_filter_offset;
 
-        for i in 0..max(1, meta.approx_filter_rank) {
+        for i in 0..meta.approx_filter_rank {
             if approx_eq.eval(&self.approx_filter[i]) != 0 {
                 return false;
             }
