@@ -725,12 +725,14 @@ impl Clubcard {
             return false;
         }
 
-        let mut approx_eq = item.as_equation(meta.approx_filter_m);
-        approx_eq.s += meta.approx_filter_offset;
+        if meta.approx_filter_rank > 0 {
+            let mut approx_eq = item.as_equation(meta.approx_filter_m);
+            approx_eq.s += meta.approx_filter_offset;
 
-        for i in 0..meta.approx_filter_rank {
-            if approx_eq.eval(&self.approx_filter[i]) != 0 {
-                return false;
+            for i in 0..meta.approx_filter_rank {
+                if approx_eq.eval(&self.approx_filter[i]) != 0 {
+                    return false;
+                }
             }
         }
 
