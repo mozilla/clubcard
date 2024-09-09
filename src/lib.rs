@@ -500,19 +500,10 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
             let errors = block
                 .errors
                 .iter()
-                .filter_map(|x| {
-                    (!x.included()).then(|| x.discriminant().to_vec())
-                })
+                .filter(|&x| (!x.included()))
+                .map(|x| x.discriminant().to_vec())
                 .collect();
-            index.insert(
-                block.id.clone(),
-                (
-                    offset,
-                    block.m,
-                    block.rank,
-                    errors,
-                ),
-            );
+            index.insert(block.id.clone(), (offset, block.m, block.rank, errors));
             offset += block.rows.len();
         }
         ShardedRibbonFilter {
@@ -554,8 +545,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> ShardedRibbonFilter<W, T, ApproxOrExact> {
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, errors)) = self.index.get(item.shard())
-        else {
+        let Some((offset, m, rank, errors)) = self.index.get(item.shard()) else {
             return false;
         };
         // Empty blocks do not contain anything,
@@ -634,12 +624,14 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
         for (shard, (offset, m, rank, errors)) in approx_filter.index {
-            let mut meta = ClubcardShardMeta::default();
-            meta.approx_filter_offset = offset;
-            meta.approx_filter_m = m;
-            meta.approx_filter_rank = rank;
-            assert!(errors.len() == 0);
-            meta.errors = errors;
+            let meta = ClubcardShardMeta {
+                approx_filter_offset: offset,
+                approx_filter_m: m,
+                approx_filter_rank: rank,
+                exact_filter_offset: 0,
+                exact_filter_m: 0,
+                errors,
+            };
             index.insert(shard, meta);
         }
 
@@ -695,8 +687,18 @@ impl fmt::Display for Clubcard {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let approx_size = 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>();
         let exact_size = 8 * self.exact_filter.len();
-        let errors = self.index.iter().map(|(_, meta)| meta.errors.len()).sum::<usize>();
-        writeln!(f, "Clubcard of size {} ({} + {})", approx_size + exact_size, approx_size, exact_size)?;
+        let errors = self
+            .index
+            .values()
+            .map(|meta| meta.errors.len())
+            .sum::<usize>();
+        writeln!(
+            f,
+            "Clubcard of size {} ({} + {})",
+            approx_size + exact_size,
+            approx_size,
+            exact_size
+        )?;
         writeln!(f, "- Errors: {}", errors)?;
         writeln!(f, "- Serialized size: {}", self.to_bytes().len())
     }
