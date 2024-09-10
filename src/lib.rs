@@ -281,6 +281,13 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     /// exact encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
+        if let Some(filter) = builder.filter {
+            if filter.shard_is_empty(&builder.id) {
+                // The approximate filter is empty, so it gives a definitive result on every
+                // item and there's nothing to encode in the exact filter.
+                return ExactRibbon::new(&builder.id, 0, filter.shard_is_inverted(&builder.id));
+            }
+        }
         let mut out = ExactRibbon::new(&builder.id, builder.items.len(), builder.inverted);
         // By inserting the included items first, we ensure that any exceptions that occur during
         // insertion are for excluded items.
@@ -565,6 +572,20 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
 }
 
 impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Approximate> {
+    pub fn shard_is_empty(&self, shard: &[u8]) -> bool {
+        let Some((_, m, _, _, _)) = self.index.get(shard) else {
+            return false;
+        };
+        *m == 0
+    }
+
+    pub fn shard_is_inverted(&self, shard: &[u8]) -> bool {
+        let Some((_, _, _, _, inverted)) = self.index.get(shard) else {
+            return false;
+        };
+        *inverted
+    }
+
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
         let Some((offset, m, rank, exceptions, inverted)) = self.index.get(item.shard()) else {
@@ -682,8 +703,6 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
     }
 }
 
-// TODO: We should have a way to say that a shard encodes |U\R| rather than |R|,
-// for the case where |R| = (1-ϵ)|U|.
 #[derive(Default, Serialize, Deserialize)]
 struct ClubcardShardMeta {
     approx_filter_offset: usize,
@@ -951,10 +970,64 @@ mod tests {
 
     #[test]
     fn test_total_approx_filter() {
+        // test that approximate filters that encode R=U are encoded
+        // as a zero-length solution vector with m=0 and inverted=true
+        // in the metadata.
+        let n = 1024;
+        let mut approx_builder = RibbonBuilder::new(&[], None);
+        approx_builder.set_universe_size(n);
+        for i in 0usize..n {
+            let mut eq = Equation::<1>::std(i);
+            eq.b = 0;
+            approx_builder.insert(eq);
+        }
+
+        let approx_ribbon = ApproximateRibbon::from(approx_builder);
+        let approx_filter = ShardedRibbonFilter::from(vec![approx_ribbon]);
+        let (_, m, rank, exceptions, inverted) = approx_filter
+            .index
+            .get(&vec![])
+            .expect("should have metadata");
+        assert!(*m == 0);
+        assert!(*rank == 0);
+        assert!(exceptions.is_empty());
+        assert!(*inverted);
+        for i in 0usize..n {
+            let eq = Equation::<1>::std(i);
+            assert!(approx_filter.contains(&eq));
+        }
+        assert!(approx_filter.solution.len() == 0);
+
+        let mut exact_builder = RibbonBuilder::new(&[], Some(&approx_filter));
+        for i in 0usize..n {
+            let mut eq = Equation::<1>::std(i);
+            eq.b = 0;
+            exact_builder.insert(eq);
+        }
+        let exact_ribbon = ExactRibbon::from(exact_builder);
+        let exact_filter = ShardedRibbonFilter::from(vec![exact_ribbon]);
+        let (_, m, rank, exceptions, inverted) = exact_filter
+            .index
+            .get(&vec![])
+            .expect("should have metadata");
+        assert!(*m == 0);
+        assert!(*rank == 1);
+        assert!(exceptions.is_empty());
+        assert!(*inverted);
+        for i in 0usize..n {
+            let eq = Equation::<1>::std(i);
+            assert!(exact_filter.contains(&eq));
+        }
+        assert!(exact_filter.solution.len() == 1);
+        assert!(exact_filter.solution[0].len() == 0);
+    }
+
+    #[test]
+    fn test_rank_0_approx_filter() {
         let n = 1024;
         let mut builder = RibbonBuilder::new(&[], None);
         builder.set_universe_size(n);
-        for i in 0usize..n {
+        for i in 0usize..768 {
             let mut eq = Equation::<1>::std(i);
             eq.b = 0;
             builder.insert(eq);
@@ -962,13 +1035,11 @@ mod tests {
 
         let ribbon = ApproximateRibbon::from(builder);
         let filter = ShardedRibbonFilter::from(vec![ribbon]);
-        let (offset, m, rank, exceptions, inverted) =
+        let (_offset, _m, rank, _exceptions, inverted) =
             filter.index.get(&vec![]).expect("should have metadata");
-        assert!(*offset == 0);
-        assert!(*m == 0);
         assert!(*rank == 0);
-        assert!(exceptions.is_empty());
-        assert!(*inverted);
+        assert!(!*inverted);
+        assert!(filter.solution.len() == 0);
         for i in 0usize..n {
             let eq = Equation::<1>::std(i);
             assert!(filter.contains(&eq));
@@ -977,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_clubcard() {
-        let subset_sizes = [1 << 16, 1 << 15, 1 << 14, 1 << 13];
+        let subset_sizes = [1 << 18, 1 << 16, 1 << 15, 1 << 14, 1 << 13];
         let universe_size = 1 << 18;
 
         let mut clubcard_builder = ClubcardBuilder::new();
