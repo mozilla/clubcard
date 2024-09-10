@@ -950,6 +950,32 @@ mod tests {
     }
 
     #[test]
+    fn test_total_approx_filter() {
+        let n = 1024;
+        let mut builder = RibbonBuilder::new(&[], None);
+        builder.set_universe_size(n);
+        for i in 0usize..n {
+            let mut eq = Equation::<1>::std(i);
+            eq.b = 0;
+            builder.insert(eq);
+        }
+
+        let ribbon = ApproximateRibbon::from(builder);
+        let filter = ShardedRibbonFilter::from(vec![ribbon]);
+        let (offset, m, rank, exceptions, inverted) =
+            filter.index.get(&vec![]).expect("should have metadata");
+        assert!(*offset == 0);
+        assert!(*m == 0);
+        assert!(*rank == 0);
+        assert!(exceptions.is_empty());
+        assert!(*inverted);
+        for i in 0usize..n {
+            let eq = Equation::<1>::std(i);
+            assert!(filter.contains(&eq));
+        }
+    }
+
+    #[test]
     fn test_clubcard() {
         let subset_sizes = [1 << 16, 1 << 15, 1 << 14, 1 << 13];
         let universe_size = 1 << 18;
