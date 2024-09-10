@@ -570,28 +570,27 @@ impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Ap
         let Some((offset, m, rank, exceptions, inverted)) = self.index.get(item.shard()) else {
             return false;
         };
-        // Empty blocks do not contain anything,
-        // despite having inner product 0 with everything.
-        if *m == 0 {
-            return false ^ inverted;
-        }
-        if *rank == 0 {
-            return true ^ inverted;
-        }
-        let mut eq = item.as_equation(*m);
-        eq.s += *offset;
-        // eq.b is irrelevant here. We don't know it when querying.
-        for i in 0..*rank {
-            if eq.eval(&self.solution[i]) != 0 {
-                return false ^ inverted;
+        let result = (|| {
+            // Empty blocks do not contain anything,
+            // despite having inner product 0 with everything.
+            if *m == 0 {
+                return false;
             }
-        }
-        for exception in exceptions {
-            if exception == item.discriminant() {
-                return false ^ inverted;
+            let mut eq = item.as_equation(*m);
+            eq.s += *offset;
+            for i in 0..*rank {
+                if eq.eval(&self.solution[i]) != 0 {
+                    return false;
+                }
             }
-        }
-        true ^ inverted
+            for exception in exceptions {
+                if exception == item.discriminant() {
+                    return false;
+                }
+            }
+            true
+        })();
+        result ^ inverted
     }
 }
 
@@ -746,39 +745,39 @@ impl Clubcard {
             return false;
         };
 
-        if meta.approx_filter_m == 0 {
-            return false ^ meta.inverted;
-        }
+        let result = (|| {
+            if meta.approx_filter_m == 0 {
+                return false;
+            }
 
-        if meta.approx_filter_rank > 0 {
             let mut approx_eq = item.as_equation(meta.approx_filter_m);
             approx_eq.s += meta.approx_filter_offset;
 
             for i in 0..meta.approx_filter_rank {
                 if approx_eq.eval(&self.approx_filter[i]) != 0 {
-                    return false ^ meta.inverted;
+                    return false;
                 }
             }
-        }
 
-        if meta.exact_filter_m == 0 {
-            return false ^ meta.inverted;
-        }
-
-        let mut exact_eq = item.as_equation(meta.exact_filter_m);
-        exact_eq.s += meta.exact_filter_offset;
-
-        if exact_eq.eval(&self.exact_filter) != 0 {
-            return false ^ meta.inverted;
-        }
-
-        for exception in &meta.exceptions {
-            if exception == item.discriminant() {
-                return false ^ meta.inverted;
+            if meta.exact_filter_m == 0 {
+                return false;
             }
-        }
 
-        true
+            let mut exact_eq = item.as_equation(meta.exact_filter_m);
+            exact_eq.s += meta.exact_filter_offset;
+
+            if exact_eq.eval(&self.exact_filter) != 0 {
+                return false;
+            }
+
+            for exception in &meta.exceptions {
+                if exception == item.discriminant() {
+                    return false;
+                }
+            }
+            true
+        })();
+        result ^ meta.inverted
     }
 }
 
@@ -936,7 +935,7 @@ mod tests {
     fn test_solve_random() {
         let n = 1024;
         const W: usize = 2;
-        let mut r = Ribbon::<W, Equation<W>, Exact>::new(&"0", n);
+        let mut r = Ribbon::<W, Equation<W>, Exact>::new(&"0", n, false);
         let mut s_dist = Uniform::new(0, r.m);
         let mut eqs = Vec::with_capacity(n);
         for _ in 0..n {
