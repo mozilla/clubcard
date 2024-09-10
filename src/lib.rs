@@ -471,78 +471,6 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
     }
 }
 
-/// Helper struct for building block systems. Don't construct this
-/// directly, just do `ShardedRibbonFilter::from(vec![r1, r2, r3]);`
-struct ShardedRibbonFilterBuilder<const W: usize, T: Filterable<W>, ApproxOrExact> {
-    blocks: Vec<Ribbon<W, T, ApproxOrExact>>,
-}
-
-impl<const W: usize, T: Filterable<W>, ApproxOrExact>
-    ShardedRibbonFilterBuilder<W, T, ApproxOrExact>
-{
-    /// Sort ribbons by descending rank (descending simplifies indexing).
-    fn sort(&mut self) {
-        self.blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
-    }
-
-    /// Solve the (block) system.
-    /// The blocks are sorted by descending rank. We need at least one solution (i.e. column
-    /// vector) per block, but we need no more than i solutions for a block of rank i.
-    /// Concretely, suppose the ranks are [4, 2, 1, 0]. Then our solution can look like
-    ///      block 0: | | | |
-    ///      block 1: | | 0 0
-    ///      block 2: | 0 0 0
-    ///      block 3: | 0 0 0
-    /// Since we serialize the block identifiers, offsets, and ranks in the final filter, we
-    /// don't need to encode the zeros.
-    fn solve(&self) -> Vec<Vec<u64>> {
-        let Some(first) = self.blocks.first() else {
-            return vec![];
-        };
-        let mut sols = vec![];
-        for i in 0..first.rank {
-            // Back substitution across blocks.
-            let mut tail = vec![];
-            for j in (0..self.blocks.len()).rev() {
-                if self.blocks[j].rank > i {
-                    tail = self.blocks[j].solve(&tail);
-                }
-            }
-            sols.push(tail);
-        }
-        sols
-    }
-
-    /// Do it! Sort the blocks, solve the system, and build an index.
-    pub fn finalize(&mut self) -> ShardedRibbonFilter<W, T, ApproxOrExact> {
-        self.sort();
-        let solution = self.solve();
-        // construct the index---a map from a block identifier to that
-        // block's offset in the solution vector.
-        let mut index = ShardedRibbonFilterIndex::new();
-        let mut offset = 0;
-        for block in &self.blocks {
-            let exceptions = block
-                .exceptions
-                .iter()
-                .filter(|&x| (!x.included()))
-                .map(|x| x.discriminant().to_vec())
-                .collect();
-            index.insert(
-                block.id.clone(),
-                (offset, block.m, block.rank, exceptions, block.inverted),
-            );
-            offset += block.rows.len();
-        }
-        ShardedRibbonFilter {
-            index,
-            solution,
-            phantom: std::marker::PhantomData,
-            phantom2: std::marker::PhantomData,
-        }
-    }
-}
-
 /// Metadata
 type ShardedRibbonFilterIndex = BTreeMap<
     /* block id */ Vec<u8>,
@@ -618,8 +546,56 @@ impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Ap
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, ApproxOrExact>>>
     for ShardedRibbonFilter<W, T, ApproxOrExact>
 {
-    fn from(blocks: Vec<Ribbon<W, T, ApproxOrExact>>) -> ShardedRibbonFilter<W, T, ApproxOrExact> {
-        ShardedRibbonFilterBuilder { blocks }.finalize()
+    fn from(mut blocks: Vec<Ribbon<W, T, ApproxOrExact>>) -> ShardedRibbonFilter<W, T, ApproxOrExact> {
+        // Sort ribbons by descending rank (descending simplifies indexing).
+        blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
+
+        // Solve the (block) system.
+        // The blocks are sorted by descending rank. We need at least one solution (i.e. column
+        // vector) per block, but we need no more than i solutions for a block of rank i.
+        // Concretely, suppose the ranks are [4, 2, 1, 0]. Then our solution can look like
+        //      block 0: | | | |
+        //      block 1: | | 0 0
+        //      block 2: | 0 0 0
+        //      block 3: | 0 0 0
+        // Since we serialize the block identifiers, offsets, and ranks in the final filter, we
+        // don't need to encode the zeros.
+        let mut solution = vec![];
+        for i in 0..blocks.first().map_or(0, |first| first.rank) {
+            // Back substitution across blocks.
+            let mut tail = vec![];
+            for j in (0..blocks.len()).rev() {
+                if blocks[j].rank > i {
+                    tail = blocks[j].solve(&tail);
+                }
+            }
+            solution.push(tail);
+        }
+
+        // construct the index---a map from a block identifier to that
+        // block's offset in the solution vector.
+        let mut index = ShardedRibbonFilterIndex::new();
+        let mut offset = 0;
+        for block in &blocks {
+            let exceptions = block
+                .exceptions
+                .iter()
+                .filter(|&x| (!x.included()))
+                .map(|x| x.discriminant().to_vec())
+                .collect();
+            index.insert(
+                block.id.clone(),
+                (offset, block.m, block.rank, exceptions, block.inverted),
+            );
+            offset += block.rows.len();
+        }
+
+        ShardedRibbonFilter {
+            index,
+            solution,
+            phantom: std::marker::PhantomData,
+            phantom2: std::marker::PhantomData,
+        }
     }
 }
 
