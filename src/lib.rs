@@ -261,8 +261,12 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
         if builder.items.len() == builder.universe_size {
             ApproximateRibbon::new(&builder.id, 0, builder.universe_size, !builder.inverted)
         } else {
-            let mut out =
-                ApproximateRibbon::new(&builder.id, builder.items.len(), builder.universe_size, builder.inverted);
+            let mut out = ApproximateRibbon::new(
+                &builder.id,
+                builder.items.len(),
+                builder.universe_size,
+                builder.inverted,
+            );
             for item in builder.items.drain(..) {
                 out.insert(item);
             }
@@ -339,7 +343,12 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W,
 impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
-    pub fn new(id: &impl AsRef<[u8]>, subset_size: usize, universe_size: usize, inverted: bool) -> Self {
+    pub fn new(
+        id: &impl AsRef<[u8]>,
+        subset_size: usize,
+        universe_size: usize,
+        inverted: bool,
+    ) -> Self {
         assert!(subset_size <= universe_size);
 
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
@@ -516,7 +525,10 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact>
                 .filter(|&x| (!x.included()))
                 .map(|x| x.discriminant().to_vec())
                 .collect();
-            index.insert(block.id.clone(), (offset, block.m, block.rank, exceptions, block.inverted));
+            index.insert(
+                block.id.clone(),
+                (offset, block.m, block.rank, exceptions, block.inverted),
+            );
             offset += block.rows.len();
         }
         ShardedRibbonFilter {
@@ -645,10 +657,9 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
                 approx_filter_offset: offset,
                 approx_filter_m: m,
                 approx_filter_rank: rank,
-                approx_filter_inverted: inverted,
                 exact_filter_offset: 0,
                 exact_filter_m: 0,
-                exact_filter_inverted: false,
+                inverted,
                 exceptions,
             };
             index.insert(shard, meta);
@@ -661,7 +672,7 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
             let meta = index.get_mut(&shard).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
-            meta.exact_filter_inverted = inverted;
+            assert!(inverted == meta.inverted);
             meta.exceptions.extend(exceptions);
         }
 
@@ -683,10 +694,9 @@ struct ClubcardShardMeta {
     approx_filter_offset: usize,
     approx_filter_m: usize,
     approx_filter_rank: usize,
-    approx_filter_inverted: bool,
     exact_filter_offset: usize,
     exact_filter_m: usize,
-    exact_filter_inverted: bool,
+    inverted: bool,
     exceptions: Vec<Vec<u8>>,
 }
 
@@ -741,7 +751,7 @@ impl Clubcard {
         };
 
         if meta.approx_filter_m == 0 {
-            return false ^ meta.approx_filter_inverted;
+            return false ^ meta.inverted;
         }
 
         if meta.approx_filter_rank > 0 {
@@ -750,25 +760,25 @@ impl Clubcard {
 
             for i in 0..meta.approx_filter_rank {
                 if approx_eq.eval(&self.approx_filter[i]) != 0 {
-                    return false ^ meta.approx_filter_inverted;
+                    return false ^ meta.inverted;
                 }
             }
         }
 
         if meta.exact_filter_m == 0 {
-            return false ^ meta.exact_filter_inverted;
+            return false ^ meta.inverted;
         }
 
         let mut exact_eq = item.as_equation(meta.exact_filter_m);
         exact_eq.s += meta.exact_filter_offset;
 
         if exact_eq.eval(&self.exact_filter) != 0 {
-            return false ^ meta.exact_filter_inverted;
+            return false ^ meta.inverted;
         }
 
         for exception in &meta.exceptions {
             if exception == item.discriminant() {
-                return false ^ meta.exact_filter_inverted;
+                return false ^ meta.inverted;
             }
         }
 
