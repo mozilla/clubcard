@@ -19,27 +19,23 @@
 //!
 //! The construction will be described in detail in a forthcoming paper.
 //!
-//! At a high level, a clubcard is a pair of GF(2) matrices (X, Y). The two hash functions
-//! (h and g) map elements of U to vectors in the domain of X and Y respectively.
+//! At a high level, a clubcard is a pair of matrices (X, Y) defined over GF(2). The hash
+//! functions h and g map elements of U to vectors in the domain of X and Y respectively.
 //!
-//! The matrix X is a solution to `A * X = 0` where the rows of A are obtained by hashing the
-//! elements of R with h. The number of columns in X is ~ log(|U\R| / |R|).
+//! The matrix X is a solution to `H * X = 0` where the rows of H are obtained by hashing the
+//! elements of R with h. The number of columns in X is floor(lg(|U\R| / |R|)).
 //!
-//! The matrix Y is a solution to `B * Y = C` where the rows of B are obtained by hashing, with g,
+//! The matrix Y is a solution to `G * Y = C` where the rows of G are obtained by hashing, with g,
 //! the elements u ∈ U for which h(u) * X = 0. The matrix Y has one column. The rows of C encode
 //! membership in R.
 //!
-//! Given a partition P of the set U, this library will construct the matrices A and B such that
-//! they are (essentially) block diagonal with blocks indexed by p in P. The blocks are sorted by
-//! rank := log(|U_p \ R_p| / |R_p|). The key observation is that we do not need to encode the
-//! columns of X beyond the rank'th position in each block, as we are free to set these columns
-//! equal to 0.
+//! Given (X, Y) and an element u ∈ U, we have that u ∈ R iff h(u) * X == 0 and g(u) * Y = 0.
 //!
 //! Clubcard was developed to replace the use of Bloom cascades in CRLite. In a preliminary
 //! experiment using a real-world collection of 12.2M revoked certs and 789.2M non-revoked certs,
 //! the currently-deployed Bloom cascade implementation of CRLite produces a 19.8MB filter in 293
-//! seconds (on a Ryzen 3975WX with 64GB of RAM). This Clubcard implementation produces a 9.2MB
-//! filter in 190 seconds.
+//! seconds (on a Ryzen 3975WX with 64GB of RAM). This Clubcard implementation produces an 8.5MB
+//! filter in 200 seconds.
 //!
 //#![warn(missing_docs)]
 
