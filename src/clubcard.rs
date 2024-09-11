@@ -49,7 +49,7 @@ impl Clubcard {
         bincode::serialize(self).unwrap()
     }
 
-    pub fn from_bytes(&self, bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
         bincode::deserialize(bytes).unwrap()
     }
 
