@@ -712,7 +712,7 @@ mod tests {
         for (i, n) in subset_sizes.iter().enumerate() {
             let mut r = clubcard_builder.get_approx_builder(&[i as u8; 32]);
             for j in 0usize..*n {
-                let eq = CRLiteKey([i as u8; 32], j.to_le_bytes().to_vec(), true);
+                let eq = CRLiteKey::revoked([i as u8; 32], j.to_le_bytes().to_vec());
                 r.insert(eq);
             }
             r.set_universe_size(universe_size);
@@ -735,7 +735,11 @@ mod tests {
         for (i, n) in subset_sizes.iter().enumerate() {
             let mut r = clubcard_builder.get_exact_builder(&[i as u8; 32]);
             for j in 0usize..universe_size {
-                let item = CRLiteKey([i as u8; 32], j.to_le_bytes().to_vec(), j < *n);
+                let item = if j < *n {
+                    CRLiteKey::revoked([i as u8; 32], j.to_le_bytes().to_vec())
+                } else {
+                    CRLiteKey::not_revoked([i as u8; 32], j.to_le_bytes().to_vec())
+                };
                 r.insert(item);
             }
             exact_builders.push(r)
@@ -771,11 +775,7 @@ mod tests {
         let mut excluded = 0;
         for i in 0..subset_sizes.len() {
             for j in 0..universe_size {
-                let item = CRLiteKey(
-                    [i as u8; 32],
-                    j.to_le_bytes().to_vec(),
-                    /* unused */ false,
-                );
+                let item = CRLiteKey::query([i as u8; 32], j.to_le_bytes().to_vec());
                 if clubcard.contains(&item) {
                     included += 1;
                 } else {

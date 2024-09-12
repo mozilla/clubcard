@@ -3,21 +3,47 @@ use sha2::{Digest, Sha256};
 use std::cmp::max;
 
 #[derive(Clone, Debug)]
-pub struct CRLiteKey(
+pub struct CRLiteKey {
     /// issuer spki hash
-    pub [u8; 32],
+    pub issuer: [u8; 32],
     /// serial number. TODO: smallvec?
-    pub Vec<u8>,
+    pub serial: Vec<u8>,
     /// revocation status
-    pub bool,
-);
+    pub revoked: bool,
+}
+
+impl CRLiteKey {
+    pub fn revoked(issuer: [u8; 32], serial: Vec<u8>) -> Self {
+        Self {
+            issuer,
+            serial,
+            revoked: true,
+        }
+    }
+
+    pub fn not_revoked(issuer: [u8; 32], serial: Vec<u8>) -> Self {
+        Self {
+            issuer,
+            serial,
+            revoked: false,
+        }
+    }
+
+    pub fn query(issuer: [u8; 32], serial: Vec<u8>) -> Self {
+        Self {
+            issuer,
+            serial,
+            revoked: false, /* unused */
+        }
+    }
+}
 
 impl Filterable<4> for CRLiteKey {
     fn as_equation(&self, m: usize) -> Equation<4> {
         let mut digest = [0u8; 32];
         let mut hasher = Sha256::new();
-        hasher.update(self.0);
-        hasher.update(&self.1);
+        hasher.update(self.issuer);
+        hasher.update(&self.serial);
         hasher.finalize_into((&mut digest).into());
 
         let mut a = [0u64; 4];
@@ -31,19 +57,19 @@ impl Filterable<4> for CRLiteKey {
         }
         a[0] |= 1;
         let s = (a[3] as usize) % max(1, m);
-        let b = if self.2 { 0 } else { 1 };
+        let b = if self.revoked { 0 } else { 1 };
         Equation { s, a, b }
     }
 
     fn shard(&self) -> &[u8] {
-        self.0.as_ref()
+        self.issuer.as_ref()
     }
 
     fn discriminant(&self) -> &[u8] {
-        &self.1
+        &self.serial
     }
 
     fn included(&self) -> bool {
-        self.2
+        self.revoked
     }
 }
