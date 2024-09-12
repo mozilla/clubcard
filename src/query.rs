@@ -111,8 +111,14 @@ pub trait Filterable<const W: usize> {
     }
 }
 
+/// Queryable is the same as Filterable except it does not have the `included()` method---one
+/// needs a Filterable to construct a filter, but a Queryable suffices to query a filter.
+/// A default implementation is provided for any Filterable.
 pub trait Queryable<const W: usize> {
+    /// Given the metadata describing a shard of a clubcard computes h(self).
     fn as_approx_query(&self, meta: &ClubcardShardMeta) -> Equation<W>;
+
+    /// Given the metadata describing a shard of a clubcard computes g(self).
     fn as_exact_query(&self, meta: &ClubcardShardMeta) -> Equation<W>;
 
     /// The shard that this item belongs in.
