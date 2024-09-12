@@ -82,23 +82,24 @@ impl Clubcard {
         };
 
         let result = (|| {
+            // All queries evaluate to 0 on an empty filter, but logically
+            // such a filter does not include anything. So we handle it as a
+            // special case.
             if meta.approx_filter_m == 0 {
                 return false;
             }
 
-            let approx_eq = item.as_approx_query(meta);
+            // Check if h(item) * X is 0
+            let approx_query = item.as_approx_query(meta);
             for i in 0..meta.approx_filter_rank {
-                if approx_eq.eval(&self.approx_filter[i]) != 0 {
+                if approx_query.eval(&self.approx_filter[i]) != 0 {
                     return false;
                 }
             }
 
-            if meta.exact_filter_m == 0 {
-                return false;
-            }
-
-            let exact_eq = item.as_exact_query(meta);
-            if exact_eq.eval(&self.exact_filter) != 0 {
+            // Check if g(item) * X is 0
+            let exact_query = item.as_exact_query(meta);
+            if exact_query.eval(&self.exact_filter) != 0 {
                 return false;
             }
 
