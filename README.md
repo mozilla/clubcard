@@ -13,9 +13,9 @@ CRLite[^4] publishes the revocation status of certificates in the WebPKI in a co
 
 The Bloom filter cascade published by Mozilla's CRLite infrastructure on 2024-08-29 is 19.3 MB. That filter encodes the revocation status of 816 million certificates from 795 distinct issuers. Out of the 816 million certificates, 11.7 million are revoked.
 
-Clubcard was developed as a replacement for the Bloom filter cascade in CRLite. A clubcard for the 2024-08-09 revocation status dataset is **8.5 MB**&mdash;a 56% reduction in size.
+Clubcard was developed as a replacement for the Bloom filter cascade in CRLite. A clubcard for the 2024-08-29 revocation status dataset is **8.5 MB**&mdash;a 56% reduction in size.
 
-Some of the improvement is due to Clubcard partitioning the set of revocations by issuer. The information theoretic lower bound for encoding an generic 11.7 million element subset of an 816 million element set is 11 MB; whereas the lower bound for encoding the 795 sets obtained by partitioning the revocations by issuer is 7.6 MB. CRLite does not employ the partitioning-by-issuer trick, but we estimate that Bloom filter cascades for the 2024-08-09 data set sharded by issuer would be ~13MB.
+Some of the improvement is due to Clubcard partitioning the set of revocations by issuer. The information theoretic lower bound for encoding an generic 11.7 million element subset of an 816 million element set is 11 MB; whereas the lower bound for encoding the 795 sets obtained by partitioning the revocations by issuer is 7.6 MB. CRLite does not employ the partitioning-by-issuer trick, but we estimate that Bloom filter cascades for the 2024-08-29 data set sharded by issuer would be ~13MB.
 
 The remainder of the improvement is due to the use of Ribbon filters. 
 
@@ -50,10 +50,10 @@ We use the fast algorithm for solving the systems in steps 4 and 9 from [^1][^2]
 
 ## When partitioning is a good idea
 
-The binomial coefficient n choose k is approximately equal to 2<sup>n h(k/n)</sup> where h is the binary entropy function (this follows from Stirling's approximation for n!).
-The number of bits required to encode an arbitrary r element subset R of an n element set U is therefore  Ω(lg(n choose k)) = Ω(n h(k/n)). The binary entropy function is concave, so
+The binomial coefficient n choose r is approximately equal to 2<sup>n h(r/n)</sup> where h is the binary entropy function (this follows from Stirling's approximation for n!).
+The number of bits required to encode an arbitrary r element subset R of an n element set U is therefore  Ω(lg(n choose r)) = Ω(n h(r/n)). The binary entropy function is concave, so
 
-&nbsp;&nbsp;&nbsp;&nbsp;n<sub>1</sub> h(k<sub>1</sub>/n<sub>1</sub>) + n<sub>2</sub> h(k<sub>2</sub>/n<sub>2</sub>) ≤ (n<sub>1</sub> + n<sub>2</sub>) h((k<sub>1</sub>+k<sub>2</sub>)/(n<sub>1</sub>+n<sub>2</sub>)).
+&nbsp;&nbsp;&nbsp;&nbsp;n<sub>1</sub> h(r<sub>1</sub>/n<sub>1</sub>) + n<sub>2</sub> h(r<sub>2</sub>/n<sub>2</sub>) ≤ (n<sub>1</sub> + n<sub>2</sub>) h((r<sub>1</sub>+r<sub>2</sub>)/(n<sub>1</sub>+n<sub>2</sub>)).
 
 It follows that if {U1, U2} is a partition of U, then one may be able to encode the pair (R1, R2) in fewer bits than it would take to encode R.
 
