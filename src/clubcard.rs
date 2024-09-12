@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+#[derive(Debug)]
+pub enum ClubcardError {
+    Deserialize,
+    Serialize,
+    UnsupportedVersion,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct ClubcardShardMeta {
     pub approx_filter_offset: usize,
@@ -44,17 +51,29 @@ impl fmt::Display for Clubcard {
             exact_size
         )?;
         writeln!(f, "- exceptions: {}", exceptions)?;
-        writeln!(f, "- Serialized size: {}", self.to_bytes().len())
+        writeln!(f, "- Serialized size: {}", self.to_bytes().map_or(0, |x| x.len()))
     }
 }
 
 impl Clubcard {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
+    const SERIALIZATION_VERSION: u16 = 0xffff;
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ClubcardError> {
+        let mut out = u16::to_le_bytes(Clubcard::SERIALIZATION_VERSION).to_vec();
+        bincode::serialize_into(&mut out, self).map_err(|_| ClubcardError::Serialize)?;
+        Ok(out)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        bincode::deserialize(bytes).unwrap()
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ClubcardError> {
+        let (version_bytes, rest) = bytes.split_at(std::mem::size_of::<u16>());
+        let Ok(version_bytes) = version_bytes.try_into() else {
+            return Err(ClubcardError::Deserialize);
+        };
+        let version = u16::from_le_bytes(version_bytes);
+        if version != Clubcard::SERIALIZATION_VERSION {
+            return Err(ClubcardError::UnsupportedVersion);
+        }
+        bincode::deserialize(rest).map_err(|_| ClubcardError::Deserialize)
     }
 
     pub fn contains<const W: usize>(&self, item: &impl Queryable<W>) -> bool {
