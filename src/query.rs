@@ -19,17 +19,17 @@ pub struct Equation<const W: usize> {
 }
 
 impl<const W: usize> Equation<W> {
+    /// Construct the aligned equation equivalent to Equation { s, a, b }
     pub fn new(s: usize, a: [u64; W], b: u8) -> Equation<W> {
-        Equation { s, a, b }
+        let mut eq = Equation { s: 0, a, b };
+        eq.add(&Equation::zero());
+        eq.s += s;
+        eq
     }
 
     /// Construct the equation a(x) = 0.
     pub fn zero() -> Self {
-        Equation {
-            s: 0,
-            a: [0u64; W],
-            b: 0,
-        }
+        Equation { s: 0, a: [0u64; W], b: 0 }
     }
 
     /// Is this a(x) = 1 or a(x) = 0?
