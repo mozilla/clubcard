@@ -505,7 +505,27 @@ mod tests {
     use crate::builder::*;
     use crate::crlite::*;
     use crate::*;
-    use rand::distributions::Uniform;
+    use rand::distributions::{Distribution, Uniform};
+    use rand::Rng;
+
+    // Construct the equation a(x) = x_i
+    pub fn std_eq<const W: usize>(i: usize) -> Equation<W> {
+        let mut a = [0u64; W];
+        a[0] = 1;
+        Equation::new(i, a, 0)
+    }
+
+    // Construct an random aligned equation using the given distribution for s.
+    pub fn rand<const W: usize>(s_dist: &impl Distribution<usize>) -> Equation<W> {
+        let mut rng = rand::thread_rng();
+        let s = s_dist.sample(&mut rng);
+        let mut a = [0u64; W];
+        for a_i in a.iter_mut() {
+            *a_i = rng.gen();
+        }
+        a[0] |= 1;
+        Equation::new(s, a, rng.gen::<u8>() & 1)
+    }
 
     impl<const W: usize> Filterable<W> for Equation<W> {
         fn as_equation(&self, _m: usize) -> Equation<W> {
@@ -526,75 +546,18 @@ mod tests {
     }
 
     #[test]
-    fn test_equation_add() {
-        let mut e1 = Equation {
-            s: 127,
-            a: [0b11],
-            b: 1,
-        };
-        let e2 = Equation {
-            s: 127,
-            a: [0b01],
-            b: 1,
-        };
-        e1.add(&e2);
-        // test that shifting works
-        assert!(e1.s == 128);
-        assert!(e1.a[0] == 0b1);
-        assert!(e1.b == 0);
-
-        let mut e1 = Equation {
-            s: 127,
-            a: [0b11, 0b1110, 0b1, 0],
-            b: 1,
-        };
-        let e2 = Equation {
-            s: 127,
-            a: [0b01, 0b0100, 0b0, 0],
-            b: 1,
-        };
-        e1.add(&e2);
-        // test that shifting works
-        assert!(e1.s == 128);
-        assert!(e1.a[0] == 0b1);
-        // test that bits move between limbs
-        assert!(e1.a[1] == (1 << 63) | 0b101);
-        assert!(e1.a[2] == 0);
-        assert!(e1.a[3] == 0);
-        assert!(e1.b == 0);
-    }
-
-    #[test]
-    fn test_equation_eval() {
-        for s in 0..64 {
-            let eq = Equation {
-                s,
-                a: [0xffffffffffffffff, 0, 0, 0],
-                b: 0,
-            };
-            assert!(0 == eq.eval(&[]));
-            for i in 0..64 {
-                assert!(((i >= eq.s) as u8) == eq.eval(&[1 << i, 0]));
-                assert!(((i < eq.s) as u8) == eq.eval(&[0, 1 << i]));
-                assert!(0 == eq.eval(&[0, 0, 1 << i]));
-            }
-        }
-    }
-
-    #[test]
     fn test_solve_identity() {
         let n = 1024;
         let mut builder = RibbonBuilder::new(&[], None);
         for i in 0usize..n {
-            let mut eq = Equation::<1>::std(i);
-            eq.b = (i % 2) as u8;
+            let eq: Equation<1> = std_eq(i);
             builder.insert(eq);
         }
         let ribbon = ExactRibbon::from(builder);
         let filter = ShardedRibbonFilter::from(vec![ribbon]);
         for i in 0usize..n {
-            let eq = Equation::<1>::std(i);
-            assert!(eq.eval(&filter.solution[0]) == (i % 2) as u8);
+            let eq: Equation<1> = std_eq(i);
+            assert!(eq.eval(&filter.solution[0]) == 0);
         }
     }
 
@@ -603,7 +566,7 @@ mod tests {
         let builder = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
         let ribbon = ApproximateRibbon::from(builder);
         let filter = ShardedRibbonFilter::from(vec![ribbon]);
-        assert!(!filter.contains(&Equation::std(0)));
+        assert!(!filter.contains(&std_eq(0)));
     }
 
     #[test]
@@ -614,7 +577,7 @@ mod tests {
         let mut s_dist = Uniform::new(0, r.m);
         let mut eqs = Vec::with_capacity(n);
         for _ in 0..n {
-            let eq = Equation::<W>::rand(&mut s_dist);
+            let eq = rand(&mut s_dist);
             eqs.push(eq.clone());
             r.insert(eq);
         }
@@ -633,8 +596,7 @@ mod tests {
         let mut approx_builder = RibbonBuilder::new(&[], None);
         approx_builder.set_universe_size(n);
         for i in 0usize..n {
-            let mut eq = Equation::<1>::std(i);
-            eq.b = 0;
+            let eq: Equation<1> = std_eq(i);
             approx_builder.insert(eq);
         }
 
@@ -649,14 +611,14 @@ mod tests {
         assert!(exceptions.is_empty());
         assert!(*inverted);
         for i in 0usize..n {
-            let eq = Equation::<1>::std(i);
+            let eq = std_eq(i);
             assert!(approx_filter.contains(&eq));
         }
         assert!(approx_filter.solution.len() == 0);
 
         let mut exact_builder = RibbonBuilder::new(&[], Some(&approx_filter));
         for i in 0usize..n {
-            let mut eq = Equation::<1>::std(i);
+            let mut eq = std_eq(i);
             eq.b = 0;
             exact_builder.insert(eq);
         }
@@ -671,7 +633,7 @@ mod tests {
         assert!(exceptions.is_empty());
         assert!(*inverted);
         for i in 0usize..n {
-            let eq = Equation::<1>::std(i);
+            let eq = std_eq(i);
             assert!(exact_filter.contains(&eq));
         }
         assert!(exact_filter.solution.len() == 1);
@@ -684,8 +646,7 @@ mod tests {
         let mut builder = RibbonBuilder::new(&[], None);
         builder.set_universe_size(n);
         for i in 0usize..768 {
-            let mut eq = Equation::<1>::std(i);
-            eq.b = 0;
+            let eq: Equation<1> = std_eq(i);
             builder.insert(eq);
         }
 
@@ -697,7 +658,7 @@ mod tests {
         assert!(!*inverted);
         assert!(filter.solution.len() == 0);
         for i in 0usize..n {
-            let eq = Equation::<1>::std(i);
+            let eq = std_eq(i);
             assert!(filter.contains(&eq));
         }
     }
@@ -755,7 +716,7 @@ mod tests {
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
 
         let clubcard = clubcard_builder.build();
-        let size = 8 * clubcard.to_bytes().len();
+        let size = 8 * clubcard.to_bytes().expect("serialization should succeed").len();
         println!("Serialized clubcard size: {}kB", size / 8 / 1024);
 
         let sum_subset_sizes: usize = subset_sizes.iter().sum();

@@ -3,8 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use crate::clubcard::ClubcardShardMeta;
-#[cfg(test)]
-use rand::{distributions::Distribution, Rng};
 use std::cmp::min;
 
 /// An Equation\<W\> is a representation of a GF(2) linear functional
@@ -14,45 +12,23 @@ use std::cmp::min;
 /// (Note: a_i above denotes the i-th bit, not the i'th 64-bit limb.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Equation<const W: usize> {
-    /* TODO restrict visibility */
-    pub s: usize,    // the row number
-    pub a: [u64; W], // the non-trivial columns
-    pub b: u8,       // the constant term
-                     // TODO? save some space by using one bit of s for b.
+    pub(crate) s: usize,    // the row number
+    pub(crate) a: [u64; W], // the non-trivial columns
+    pub(crate) b: u8,       // the constant term
+                 // TODO? save some space by using one bit of s for b.
 }
 
 impl<const W: usize> Equation<W> {
+    pub fn new(s: usize, a: [u64; W], b: u8) -> Equation<W> {
+        Equation { s, a, b }
+    }
+
     /// Construct the equation a(x) = 0.
     pub fn zero() -> Self {
         Equation {
             s: 0,
             a: [0u64; W],
             b: 0,
-        }
-    }
-
-    /// Construct the equation a(x) = x_i
-    #[cfg(test)]
-    pub fn std(i: usize) -> Self {
-        let mut a = [0u64; W];
-        a[0] = 1;
-        Equation { s: i, a, b: 0 }
-    }
-
-    /// Construct an random aligned equation using the given distribution for s.
-    #[cfg(test)]
-    pub fn rand(s_dist: &impl Distribution<usize>) -> Self {
-        let mut rng = rand::thread_rng();
-        let s = s_dist.sample(&mut rng);
-        let mut a = [0u64; W];
-        for a_i in a.iter_mut() {
-            *a_i = rng.gen();
-        }
-        a[0] |= 1;
-        Equation {
-            s,
-            a,
-            b: rng.gen::<u8>() & 1,
         }
     }
 
@@ -171,5 +147,66 @@ impl<const W: usize, T: Filterable<W>> Queryable<W> for T {
     /// `discriminant()`.
     fn discriminant(&self) -> &[u8] {
         Filterable::discriminant(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Equation;
+
+    #[test]
+    fn test_equation_add() {
+        let mut e1 = Equation {
+            s: 127,
+            a: [0b11],
+            b: 1,
+        };
+        let e2 = Equation {
+            s: 127,
+            a: [0b01],
+            b: 1,
+        };
+        e1.add(&e2);
+        // test that shifting works
+        assert!(e1.s == 128);
+        assert!(e1.a[0] == 0b1);
+        assert!(e1.b == 0);
+
+        let mut e1 = Equation {
+            s: 127,
+            a: [0b11, 0b1110, 0b1, 0],
+            b: 1,
+        };
+        let e2 = Equation {
+            s: 127,
+            a: [0b01, 0b0100, 0b0, 0],
+            b: 1,
+        };
+        e1.add(&e2);
+        // test that shifting works
+        assert!(e1.s == 128);
+        assert!(e1.a[0] == 0b1);
+        // test that bits move between limbs
+        assert!(e1.a[1] == (1 << 63) | 0b101);
+        assert!(e1.a[2] == 0);
+        assert!(e1.a[3] == 0);
+        assert!(e1.b == 0);
+    }
+
+    #[test]
+    fn test_equation_eval() {
+        for s in 0..64 {
+            let eq = Equation {
+                s,
+                a: [0xffffffffffffffff, 0, 0, 0],
+                b: 0,
+            };
+            assert!(0 == eq.eval(&[]));
+            for i in 0..64 {
+                assert!(((i >= eq.s) as u8) == eq.eval(&[1 << i, 0]));
+                assert!(((i < eq.s) as u8) == eq.eval(&[0, 1 << i]));
+                assert!(0 == eq.eval(&[0, 0, 1 << i]));
+            }
+        }
     }
 }
