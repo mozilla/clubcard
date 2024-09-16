@@ -1,6 +1,50 @@
 use crate::{AsQuery, ClubcardIndexEntry, Equation, Filterable, Queryable};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::max;
+use std::collections::HashMap;
+
+#[cfg(feature = "builder")]
+use base64::Engine;
+#[cfg(feature = "builder")]
+use std::io::Read;
+
+type LogId = [u8; 32];
+type TimestampInterval = (u64, u64);
+
+#[derive(Serialize, Deserialize)]
+pub struct CRLiteCoverage(pub HashMap<LogId, TimestampInterval>);
+
+#[cfg(feature = "builder")]
+impl CRLiteCoverage {
+    pub fn from_mozilla_ct_logs_json<T>(reader: T) -> Self
+    where
+        T: Read,
+    {
+        #[allow(non_snake_case)]
+        #[derive(Deserialize)]
+        struct MozillaCtLogsJson {
+            LogID: String,
+            MaxTimestamp: u64,
+            MinTimestamp: u64,
+        }
+
+        let mut coverage = HashMap::new();
+        let json_entries: Vec<MozillaCtLogsJson> = match serde_json::from_reader(reader) {
+            Ok(json_entries) => json_entries,
+            _ => return CRLiteCoverage(Default::default()),
+        };
+        for entry in json_entries {
+            let mut log_id = [0u8; 32];
+            match base64::prelude::BASE64_STANDARD.decode(&entry.LogID) {
+                Ok(bytes) if bytes.len() == 32 => log_id.copy_from_slice(&bytes),
+                _ => continue,
+            };
+            coverage.insert(log_id, (entry.MinTimestamp, entry.MaxTimestamp));
+        }
+        CRLiteCoverage(coverage)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CRLiteBuilderItem {
@@ -54,6 +98,7 @@ impl Filterable<4> for CRLiteBuilderItem {
 pub struct CRLiteQuery<'a> {
     pub issuer: &'a [u8; 32],
     pub serial: &'a [u8],
+    pub log_timestamps: Option<&'a [([u8; 32], u64)]>,
 }
 
 impl<'a> CRLiteQuery<'a> {
@@ -84,6 +129,7 @@ impl<'a> From<&'a CRLiteBuilderItem> for CRLiteQuery<'a> {
         Self {
             issuer: &item.issuer,
             serial: &item.serial,
+            log_timestamps: None,
         }
     }
 }
@@ -101,17 +147,13 @@ impl<'a> AsQuery<4> for CRLiteQuery<'a> {
         exact_eq
     }
 
-    /// A unique identifier for this item. If this item cannot be inserted into the linear system,
-    /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
-    /// `discriminant()`.
     fn discriminant(&self) -> &[u8] {
         &self.serial
     }
 }
 
 impl<'a> Queryable<4> for CRLiteQuery<'a> {
-    // TODO: Replace this with HashMap<ct log id, (min timestamp, max timestamp)>
-    type UniverseMetadata = ();
+    type UniverseMetadata = CRLiteCoverage;
 
     // The set of CRLiteKeys is partitioned by issuer, and each
     // CRLiteKey knows its issuer. So there's no need for additional
@@ -122,7 +164,17 @@ impl<'a> Queryable<4> for CRLiteQuery<'a> {
         Some(self.issuer.as_ref())
     }
 
-    fn in_universe(&self, _universe: &Self::UniverseMetadata) -> bool {
-        true
+    fn in_universe(&self, universe: &Self::UniverseMetadata) -> bool {
+        let Some(log_timestamps) = self.log_timestamps else {
+            return false;
+        };
+        for (log_id, timestamp) in log_timestamps {
+            if let Some((low, high)) = universe.0.get(log_id) {
+                if low <= timestamp && timestamp <= high {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

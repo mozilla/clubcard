@@ -14,11 +14,21 @@ pub enum ClubcardError {
     UnsupportedVersion,
 }
 
+#[derive(PartialEq, Eq)]
 pub enum SetMembership {
     Member,
     Nonmember,
     NotInUniverse,
     NoData,
+}
+
+impl From<bool> for SetMembership {
+    fn from(b: bool) -> SetMembership {
+        match b {
+            true => SetMembership::Member,
+            false => SetMembership::Nonmember,
+        }
+    }
 }
 
 /// Metadata needed to compute membership in a clubcard.
@@ -105,27 +115,19 @@ where
         bincode::deserialize(rest).map_err(|_| ClubcardError::Deserialize)
     }
 
-    /// Check whether item is in the set encoded by this clubcard.
-    pub fn contains<U>(&self, item: &U) -> SetMembership
+    /// Perform a membership query without checking whether the item is in the universe.
+    /// The result is undefined if the item is not in the universe. The result is also
+    /// undefined if U's implementation of AsQuery differs from T's.
+    pub fn unchecked_contains<U>(&self, item: &U) -> bool
     where
-        // TODO: The typical case is U=T here, though I don't see how to juggle the lifetimes.
-        // Maybe it's useful to allow queries against any type with consistent
-        U: Queryable<
-            W,
-            UniverseMetadata = T::UniverseMetadata,
-            PartitionMetadata = T::PartitionMetadata,
-        >, // metadata?
+        U: Queryable<W, PartitionMetadata = T::PartitionMetadata>,
     {
-        if !item.in_universe(&self.universe_metadata) {
-            return SetMembership::NotInUniverse;
-        };
-
         let Some(block_id) = item.block_id(&self.partition_metadata) else {
-            return SetMembership::NoData;
+            return false;
         };
 
         let Some(meta) = self.index.get(block_id) else {
-            return SetMembership::NoData;
+            return false;
         };
 
         let result = (|| {
@@ -158,10 +160,20 @@ where
             true
         })();
 
-        if result ^ meta.inverted {
-            SetMembership::Member
-        } else {
-            SetMembership::Nonmember
-        }
+        result ^ meta.inverted
+    }
+
+    /// Check that the item is in the appropriate universe, and then perform a membership query.
+    pub fn contains(&self, item: &T) -> SetMembership {
+        if !item.in_universe(&self.universe_metadata) {
+            return SetMembership::NotInUniverse;
+        };
+
+        match item.block_id(&self.partition_metadata) {
+            Some(id) if self.index.contains_key(id) => (),
+            _ => return SetMembership::NoData,
+        };
+
+        self.unchecked_contains(item).into()
     }
 }

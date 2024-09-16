@@ -515,6 +515,7 @@ mod tests {
     use crate::*;
     use rand::distributions::{Distribution, Uniform};
     use rand::Rng;
+    use std::collections::HashMap;
 
     // Construct the equation a(x) = x_i
     pub fn std_eq<const W: usize>(i: usize) -> Equation<W> {
@@ -686,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_clubcard() {
-        let subset_sizes = [1 << 18, 1 << 16, 1 << 15, 1 << 14, 1 << 13];
+        let subset_sizes = [1 << 17, 1 << 16, 1 << 15, 1 << 14, 1 << 13];
         let universe_size = 1 << 18;
 
         let mut clubcard_builder = ClubcardBuilder::new();
@@ -736,8 +737,11 @@ mod tests {
 
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
 
+        let mut log_coverage = HashMap::new();
+        log_coverage.insert([0u8; 32], (0u64, u64::MAX));
+
         let clubcard =
-            clubcard_builder.build::<CRLiteQuery>(Default::default(), Default::default());
+            clubcard_builder.build::<CRLiteQuery>(CRLiteCoverage(log_coverage), Default::default());
         let size = 8 * clubcard
             .to_bytes()
             .expect("serialization should succeed")
@@ -766,16 +770,76 @@ mod tests {
                 let item = CRLiteQuery {
                     issuer: &issuer,
                     serial: &serial,
+                    log_timestamps: None,
                 };
-                match clubcard.contains(&item) {
-                    SetMembership::Member => included += 1,
-                    SetMembership::Nonmember => excluded += 1,
-                    _ => unreachable!(),
-                };
+                if clubcard.unchecked_contains(&item) {
+                    included += 1;
+                } else {
+                    excluded += 1;
+                }
             }
         }
         println!("\tfound {} included, {} excluded", included, excluded);
         assert!(sum_subset_sizes == included);
         assert!(sum_universe_sizes - sum_subset_sizes == excluded);
+
+        // Test that querying a serial from a never-before-seen issuer results in a non-member return.
+        let issuer = [subset_sizes.len() as u8; 32];
+        let serial = 0usize.to_le_bytes();
+        let item = CRLiteQuery {
+            issuer: &issuer,
+            serial: &serial,
+            log_timestamps: None,
+        };
+        assert!(!clubcard.unchecked_contains(&item));
+
+        assert!(subset_sizes.len() > 0 && subset_sizes[0] > 0 && subset_sizes[0] < universe_size);
+        let issuer = [0u8; 32];
+        let revoked_serial = 0usize.to_le_bytes();
+        let nonrevoked_serial = (universe_size - 1).to_le_bytes();
+
+        // Test that calling contains() a without a timestamp results in a NotInUniverse return
+        let item = CRLiteQuery {
+            issuer: &issuer,
+            serial: &revoked_serial,
+            log_timestamps: None,
+        };
+        assert!(matches!(
+            clubcard.contains(&item),
+            SetMembership::NotInUniverse
+        ));
+
+        // Test that calling contains() without a timestamp in a covered interval results in a
+        // Member return.
+        let timestamps = [([0u8; 32], 100)];
+        let item = CRLiteQuery {
+            issuer: &issuer,
+            serial: &revoked_serial,
+            log_timestamps: Some(&timestamps),
+        };
+        assert!(matches!(clubcard.contains(&item), SetMembership::Member));
+
+        // Test that calling contains() without a timestamp in a covered interval results in a
+        // Member return.
+        let timestamps = [([0u8; 32], 100)];
+        let item = CRLiteQuery {
+            issuer: &issuer,
+            serial: &nonrevoked_serial,
+            log_timestamps: Some(&timestamps),
+        };
+        assert!(matches!(clubcard.contains(&item), SetMembership::Nonmember));
+
+        // Test that calling contains() without a timestamp in a covered interval results in a
+        // Member return.
+        let timestamps = [([1u8; 32], 100)];
+        let item = CRLiteQuery {
+            issuer: &issuer,
+            serial: &revoked_serial,
+            log_timestamps: Some(&timestamps),
+        };
+        assert!(matches!(
+            clubcard.contains(&item),
+            SetMembership::NotInUniverse
+        ));
     }
 }
