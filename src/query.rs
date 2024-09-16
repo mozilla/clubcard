@@ -115,18 +115,10 @@ pub trait Filterable<const W: usize> {
     }
 }
 
-/// Queryable is the same as Filterable except it does not have the `included()` method---one
-/// needs a Filterable to construct a filter, but a Queryable suffices to query a filter.
-/// A default implementation is provided for any Filterable.
-pub trait Queryable<const W: usize> {
-    /// Given the metadata describing a block of a clubcard computes h(self).
+pub trait AsQuery<const W: usize> {
     fn as_approx_query(&self, meta: &ClubcardIndexEntry) -> Equation<W>;
 
-    /// Given the metadata describing a block of a clubcard computes g(self).
     fn as_exact_query(&self, meta: &ClubcardIndexEntry) -> Equation<W>;
-
-    /// The block that this item belongs in.
-    fn block_id(&self) -> &[u8];
 
     /// A unique identifier for this item. If this item cannot be inserted into the linear system,
     /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
@@ -134,7 +126,7 @@ pub trait Queryable<const W: usize> {
     fn discriminant(&self) -> &[u8];
 }
 
-impl<const W: usize, T: Filterable<W>> Queryable<W> for T {
+impl<const W: usize, T: Filterable<W>> AsQuery<W> for T {
     fn as_approx_query(&self, meta: &ClubcardIndexEntry) -> Equation<W> {
         let mut approx_eq = self.as_equation(meta.approx_filter_m);
         approx_eq.s += meta.approx_filter_offset;
@@ -142,22 +134,28 @@ impl<const W: usize, T: Filterable<W>> Queryable<W> for T {
     }
 
     fn as_exact_query(&self, meta: &ClubcardIndexEntry) -> Equation<W> {
-        let mut approx_eq = self.as_equation(meta.exact_filter_m);
-        approx_eq.s += meta.exact_filter_offset;
-        approx_eq
+        let mut exact_eq = self.as_equation(meta.exact_filter_m);
+        exact_eq.s += meta.exact_filter_offset;
+        exact_eq
     }
 
-    /// The block that this item belongs in.
-    fn block_id(&self) -> &[u8] {
-        Filterable::block_id(self)
-    }
-
-    /// A unique identifier for this item. If this item cannot be inserted into the linear system,
-    /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
-    /// `discriminant()`.
     fn discriminant(&self) -> &[u8] {
         Filterable::discriminant(self)
     }
+}
+
+pub trait Queryable<const W: usize>: AsQuery<W> {
+    type UniverseMetadata;
+    type PartitionMetadata;
+
+    /// Use the PartitionMetadata associated with a Clubcard to identify the
+    /// block of the Clubcard that this item belongs to.
+    /// Returns None if this item does not belong to any block.
+    fn block_id(&self, meta: &Self::PartitionMetadata) -> Option<&[u8]>;
+
+    /// Use the UniverseMetadata associated with a Clubcard to determine
+    /// whether or not this item is in the Clubcard's encoded universe.
+    fn in_universe(&self, meta: &Self::UniverseMetadata) -> bool;
 }
 
 #[cfg(test)]

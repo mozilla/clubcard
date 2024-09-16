@@ -1,4 +1,4 @@
-use crate::{Equation, Filterable};
+use crate::{Equation, Filterable, Queryable};
 use sha2::{Digest, Sha256};
 use std::cmp::max;
 
@@ -71,5 +71,23 @@ impl Filterable<4> for CRLiteKey {
 
     fn included(&self) -> bool {
         self.revoked
+    }
+}
+
+impl Queryable<4> for CRLiteKey {
+    // TODO: Replace this with HashMap<ct log id, (min timestamp, max timestamp)>
+    type UniverseMetadata = ();
+
+    // The set of CRLiteKeys is partitioned by issuer, and each
+    // CRLiteKey knows its issuer. So there's no need for additional
+    // partition metadata.
+    type PartitionMetadata = ();
+
+    fn block_id(&self, _meta: &Self::PartitionMetadata) -> Option<&[u8]> {
+        Some(self.issuer.as_ref())
+    }
+
+    fn in_universe(&self, _universe: &Self::UniverseMetadata) -> bool {
+        true
     }
 }

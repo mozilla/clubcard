@@ -14,6 +14,13 @@ pub enum ClubcardError {
     UnsupportedVersion,
 }
 
+pub enum SetMembership {
+    Member,
+    Nonmember,
+    NotInUniverse,
+    NoData,
+}
+
 /// Metadata needed to compute membership in a clubcard.
 #[derive(Default, Serialize, Deserialize)]
 pub struct ClubcardIndexEntry {
@@ -39,13 +46,16 @@ pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardIndexEntry>;
 /// A queryable Clubcard
 #[derive(Serialize, Deserialize)]
 pub struct Clubcard<const W: usize, T: Queryable<W>> {
-    /// Block metadata lookup table
+    /// Metadata for determining whether a Queryable is in the encoded universe.
+    pub(crate) universe_metadata: T::UniverseMetadata,
+    /// Metadata for determining the block to which a Queryable belongs.
+    pub(crate) partition_metadata: T::PartitionMetadata,
+    /// Lookup table for per-block metadata.
     pub(crate) index: ClubcardIndex,
     /// The matrix X
     pub(crate) approx_filter: Vec<Vec<u64>>,
     /// The matrix Y
     pub(crate) exact_filter: Vec<u64>,
-    pub(crate) phantom: std::marker::PhantomData<T>,
 }
 
 impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
@@ -64,16 +74,15 @@ impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
             approx_size,
             exact_size
         )?;
-        writeln!(f, "- exceptions: {}", exceptions)?;
-        writeln!(
-            f,
-            "- Serialized size: {}",
-            self.to_bytes().map_or(0, |x| x.len())
-        )
+        writeln!(f, "- exceptions: {}", exceptions)
     }
 }
 
-impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
+impl<'de, const W: usize, T: Queryable<W>> Clubcard<W, T>
+where
+    T::PartitionMetadata: Serialize + Deserialize<'de>,
+    T::UniverseMetadata: Serialize + Deserialize<'de>,
+{
     const SERIALIZATION_VERSION: u16 = 0xffff;
 
     /// Serialize this clubcard.
@@ -84,7 +93,7 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     }
 
     /// Deserialize a clubcard.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ClubcardError> {
+    pub fn from_bytes(bytes: &'de [u8]) -> Result<Self, ClubcardError> {
         let (version_bytes, rest) = bytes.split_at(std::mem::size_of::<u16>());
         let Ok(version_bytes) = version_bytes.try_into() else {
             return Err(ClubcardError::Deserialize);
@@ -97,9 +106,17 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     }
 
     /// Check whether item is in the set encoded by this clubcard.
-    pub fn contains(&self, item: &T) -> bool {
-        let Some(meta) = self.index.get(item.block_id()) else {
-            return false;
+    pub fn contains(&self, item: &T) -> SetMembership {
+        if !item.in_universe(&self.universe_metadata) {
+            return SetMembership::NotInUniverse;
+        };
+
+        let Some(block_id) = item.block_id(&self.partition_metadata) else {
+            return SetMembership::NoData;
+        };
+
+        let Some(meta) = self.index.get(block_id) else {
+            return SetMembership::NoData;
         };
 
         let result = (|| {
@@ -131,6 +148,11 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
             }
             true
         })();
-        result ^ meta.inverted
+
+        if result ^ meta.inverted {
+            SetMembership::Member
+        } else {
+            SetMembership::Nonmember
+        }
     }
 }

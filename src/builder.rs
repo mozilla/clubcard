@@ -2,7 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::{clubcard::ClubcardIndex, Clubcard, ClubcardIndexEntry, Equation, Filterable};
+use crate::{
+    clubcard::ClubcardIndex, Clubcard, ClubcardIndexEntry, Equation, Filterable, Queryable,
+};
 use rand::{thread_rng, Rng};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -421,7 +423,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 }
 
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
-pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
+pub struct ClubcardBuilder<const W: usize, T: Filterable<W> + Queryable<W>> {
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
     approx_filter: Option<PartitionedRibbonFilter<W, T, Approximate>>,
@@ -430,7 +432,7 @@ pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
     exact_filter: Option<PartitionedRibbonFilter<W, T, Exact>>,
 }
 
-impl<const W: usize, T: Filterable<W>> Default for ClubcardBuilder<W, T> {
+impl<const W: usize, T: Filterable<W> + Queryable<W>> Default for ClubcardBuilder<W, T> {
     fn default() -> Self {
         ClubcardBuilder {
             approx_filter: None,
@@ -439,7 +441,7 @@ impl<const W: usize, T: Filterable<W>> Default for ClubcardBuilder<W, T> {
     }
 }
 
-impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
+impl<const W: usize, T: Filterable<W> + Queryable<W>> ClubcardBuilder<W, T> {
     pub fn new() -> Self {
         ClubcardBuilder::default()
     }
@@ -460,7 +462,11 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         self.exact_filter = Some(PartitionedRibbonFilter::from(ribbons));
     }
 
-    pub fn build(self) -> Clubcard<W, T> {
+    pub fn build(
+        self,
+        universe_metadata: T::UniverseMetadata,
+        partition_metadata: T::PartitionMetadata,
+    ) -> Clubcard<W, T> {
         let mut index: ClubcardIndex = BTreeMap::new();
 
         assert!(self.approx_filter.is_some());
@@ -492,11 +498,12 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         assert!(exact_filter.solution.len() == 1);
         let exact_filter = exact_filter.solution.pop().unwrap();
 
-        Clubcard::<W, T> {
+        Clubcard {
+            universe_metadata,
+            partition_metadata,
             index,
             approx_filter: approx_filter.solution,
             exact_filter,
-            phantom: std::marker::PhantomData,
         }
     }
 }
@@ -543,6 +550,19 @@ mod tests {
 
         fn included(&self) -> bool {
             self.b == 0
+        }
+    }
+
+    impl<const W: usize> Queryable<W> for Equation<W> {
+        type UniverseMetadata = ();
+        type PartitionMetadata = ();
+
+        fn block_id(&self, _meta: &Self::PartitionMetadata) -> Option<&[u8]> {
+            Some(Filterable::block_id(self))
+        }
+
+        fn in_universe(&self, _meta: &Self::UniverseMetadata) -> bool {
+            true
         }
     }
 
@@ -716,7 +736,7 @@ mod tests {
 
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
 
-        let clubcard = clubcard_builder.build();
+        let clubcard = clubcard_builder.build(Default::default(), Default::default());
         let size = 8 * clubcard
             .to_bytes()
             .expect("serialization should succeed")
@@ -741,11 +761,11 @@ mod tests {
         for i in 0..subset_sizes.len() {
             for j in 0..universe_size {
                 let item = CRLiteKey::query([i as u8; 32], j.to_le_bytes().to_vec());
-                if clubcard.contains(&item) {
-                    included += 1;
-                } else {
-                    excluded += 1;
-                }
+                match clubcard.contains(&item) {
+                    SetMembership::Member => included += 1,
+                    SetMembership::Nonmember => excluded += 1,
+                    _ => unreachable!(),
+                };
             }
         }
         println!("\tfound {} included, {} excluded", included, excluded);
