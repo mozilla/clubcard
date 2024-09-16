@@ -16,30 +16,30 @@ pub enum ClubcardError {
 
 /// Metadata needed to compute membership in a clubcard.
 #[derive(Default, Serialize, Deserialize)]
-pub struct ClubcardShardMeta {
+pub struct ClubcardIndexEntry {
     /// Description of the hash function h.
     pub approx_filter_m: usize,
     /// Description of the hash function g.
     pub exact_filter_m: usize,
     /// The number of columns in X.
     pub approx_filter_rank: usize,
-    /// An offset t such that [0^t || h(u)] * X = h(u) * Xi, where i is the shard identifier.
+    /// An offset t such that [0^t || h(u)] * X = h(u) * Xi, where i is the block identifier.
     pub approx_filter_offset: usize,
-    /// An offset t such that [0^t || g(u)] * Y = g(u) * Yi, where i is the shard identifier.
+    /// An offset t such that [0^t || g(u)] * Y = g(u) * Yi, where i is the block identifier.
     pub exact_filter_offset: usize,
-    /// Whether to invert the output of queries to this shard.
+    /// Whether to invert the output of queries to this block.
     pub inverted: bool,
-    /// A list of elements of Ui \ Ri that are not correctly encoded by this shard.
+    /// A list of elements of Ui \ Ri that are not correctly encoded by this block.
     pub exceptions: Vec<Vec<u8>>,
 }
 
-/// Lookup table from shard identifiers to shard metadata.
-pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardShardMeta>;
+/// Lookup table from block identifiers to block metadata.
+pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardIndexEntry>;
 
 /// A queryable Clubcard
 #[derive(Serialize, Deserialize)]
 pub struct Clubcard<const W: usize, T: Queryable<W>> {
-    /// Shard lookup table
+    /// Block metadata lookup table
     pub(crate) index: ClubcardIndex,
     /// The matrix X
     pub(crate) approx_filter: Vec<Vec<u64>>,
@@ -98,7 +98,7 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
 
     /// Check whether item is in the set encoded by this clubcard.
     pub fn contains(&self, item: &T) -> bool {
-        let Some(meta) = self.index.get(item.shard()) else {
+        let Some(meta) = self.index.get(item.block_id()) else {
             return false;
         };
 

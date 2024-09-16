@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::{clubcard::ClubcardIndex, Clubcard, ClubcardShardMeta, Equation, Filterable};
+use crate::{clubcard::ClubcardIndex, Clubcard, ClubcardIndexEntry, Equation, Filterable};
 use rand::{thread_rng, Rng};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -25,7 +25,7 @@ pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
     /// items to be inserted.
     pub items: Vec<T>,
     /// filter for pruning insertions.
-    pub filter: Option<&'a ShardedRibbonFilter<W, T, Approximate>>,
+    pub filter: Option<&'a PartitionedRibbonFilter<W, T, Approximate>>,
     /// size of the universe that contains self.items
     universe_size: usize,
     /// Whether queries against this ribbon indicate membership in R (inverted = false) or
@@ -36,7 +36,7 @@ pub struct RibbonBuilder<'a, const W: usize, T: Filterable<W>> {
 impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     pub fn new(
         id: &impl AsRef<[u8]>,
-        filter: Option<&'a ShardedRibbonFilter<W, T, Approximate>>,
+        filter: Option<&'a PartitionedRibbonFilter<W, T, Approximate>>,
     ) -> RibbonBuilder<'a, W, T> {
         RibbonBuilder {
             id: AsRef::<[u8]>::as_ref(id).to_vec(),
@@ -102,10 +102,10 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
         if let Some(filter) = builder.filter {
-            if filter.shard_is_empty(&builder.id) {
+            if filter.block_is_empty(&builder.id) {
                 // The approximate filter is empty, so it gives a definitive result on every
                 // item and there's nothing to encode in the exact filter.
-                return ExactRibbon::new(&builder.id, 0, filter.shard_is_inverted(&builder.id));
+                return ExactRibbon::new(&builder.id, 0, filter.block_is_inverted(&builder.id));
             }
         }
         let mut out = ExactRibbon::new(&builder.id, builder.items.len(), builder.inverted);
@@ -292,7 +292,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
 }
 
 /// Metadata
-type ShardedRibbonFilterIndex = BTreeMap<
+type PartitionedRibbonFilterIndex = BTreeMap<
     /* block id */ Vec<u8>,
     (
         /* offset */ usize,
@@ -304,31 +304,31 @@ type ShardedRibbonFilterIndex = BTreeMap<
 >;
 
 /// A solution to a ribbon system, along with metadata necessary for querying it.
-pub struct ShardedRibbonFilter<const W: usize, T: Filterable<W>, ApproxOrExact> {
-    index: ShardedRibbonFilterIndex,
+pub struct PartitionedRibbonFilter<const W: usize, T: Filterable<W>, ApproxOrExact> {
+    index: PartitionedRibbonFilterIndex,
     solution: Vec<Vec<u64>>,
     phantom: std::marker::PhantomData<T>,
     phantom2: std::marker::PhantomData<ApproxOrExact>,
 }
 
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display
-    for ShardedRibbonFilter<W, T, ApproxOrExact>
+    for PartitionedRibbonFilter<W, T, ApproxOrExact>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ShardedRibbonFilter({:?})", self.index)
+        write!(f, "PartitionedRibbonFilter({:?})", self.index)
     }
 }
 
-impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Approximate> {
-    pub fn shard_is_empty(&self, shard: &[u8]) -> bool {
-        let Some((_, m, _, _, _)) = self.index.get(shard) else {
+impl<const W: usize, T: Filterable<W>, Approximate> PartitionedRibbonFilter<W, T, Approximate> {
+    pub fn block_is_empty(&self, block: &[u8]) -> bool {
+        let Some((_, m, _, _, _)) = self.index.get(block) else {
             return false;
         };
         *m == 0
     }
 
-    pub fn shard_is_inverted(&self, shard: &[u8]) -> bool {
-        let Some((_, _, _, _, inverted)) = self.index.get(shard) else {
+    pub fn block_is_inverted(&self, block: &[u8]) -> bool {
+        let Some((_, _, _, _, inverted)) = self.index.get(block) else {
             return false;
         };
         *inverted
@@ -336,7 +336,7 @@ impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Ap
 
     /// Check if this filter contains the given item in the given block.
     pub fn contains(&self, item: &T) -> bool {
-        let Some((offset, m, rank, exceptions, inverted)) = self.index.get(item.shard()) else {
+        let Some((offset, m, rank, exceptions, inverted)) = self.index.get(item.block_id()) else {
             return false;
         };
         let result = (|| {
@@ -364,11 +364,11 @@ impl<const W: usize, T: Filterable<W>, Approximate> ShardedRibbonFilter<W, T, Ap
 }
 
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, ApproxOrExact>>>
-    for ShardedRibbonFilter<W, T, ApproxOrExact>
+    for PartitionedRibbonFilter<W, T, ApproxOrExact>
 {
     fn from(
         mut blocks: Vec<Ribbon<W, T, ApproxOrExact>>,
-    ) -> ShardedRibbonFilter<W, T, ApproxOrExact> {
+    ) -> PartitionedRibbonFilter<W, T, ApproxOrExact> {
         // Sort ribbons by descending rank (descending simplifies indexing).
         blocks.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
 
@@ -396,7 +396,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 
         // construct the index---a map from a block identifier to that
         // block's offset in the solution vector.
-        let mut index = ShardedRibbonFilterIndex::new();
+        let mut index = PartitionedRibbonFilterIndex::new();
         let mut offset = 0;
         for block in &blocks {
             let exceptions = block
@@ -411,7 +411,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
             offset += block.rows.len();
         }
 
-        ShardedRibbonFilter {
+        PartitionedRibbonFilter {
             index,
             solution,
             phantom: std::marker::PhantomData,
@@ -424,10 +424,10 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
-    approx_filter: Option<ShardedRibbonFilter<W, T, Approximate>>,
+    approx_filter: Option<PartitionedRibbonFilter<W, T, Approximate>>,
     /// An exact membership query filter to confirm membership in R for items that
     /// pass through the approximate filter.
-    exact_filter: Option<ShardedRibbonFilter<W, T, Exact>>,
+    exact_filter: Option<PartitionedRibbonFilter<W, T, Exact>>,
 }
 
 impl<const W: usize, T: Filterable<W>> Default for ClubcardBuilder<W, T> {
@@ -453,11 +453,11 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
     }
 
     pub fn collect_approx_ribbons(&mut self, ribbons: Vec<ApproximateRibbon<W, T>>) {
-        self.approx_filter = Some(ShardedRibbonFilter::from(ribbons));
+        self.approx_filter = Some(PartitionedRibbonFilter::from(ribbons));
     }
 
     pub fn collect_exact_ribbons(&mut self, ribbons: Vec<Ribbon<W, T, Exact>>) {
-        self.exact_filter = Some(ShardedRibbonFilter::from(ribbons));
+        self.exact_filter = Some(PartitionedRibbonFilter::from(ribbons));
     }
 
     pub fn build(self) -> Clubcard<W, T> {
@@ -465,8 +465,8 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
         assert!(self.approx_filter.is_some());
         let approx_filter = self.approx_filter.unwrap();
-        for (shard, (offset, m, rank, exceptions, inverted)) in approx_filter.index {
-            let meta = ClubcardShardMeta {
+        for (block, (offset, m, rank, exceptions, inverted)) in approx_filter.index {
+            let meta = ClubcardIndexEntry {
                 approx_filter_offset: offset,
                 approx_filter_m: m,
                 approx_filter_rank: rank,
@@ -475,14 +475,14 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
                 inverted,
                 exceptions,
             };
-            index.insert(shard, meta);
+            index.insert(block, meta);
         }
 
         assert!(self.exact_filter.is_some());
         let mut exact_filter = self.exact_filter.unwrap();
-        for (shard, (offset, m, rank, exceptions, inverted)) in exact_filter.index {
+        for (block, (offset, m, rank, exceptions, inverted)) in exact_filter.index {
             assert!(rank == 1);
-            let meta = index.get_mut(&shard).unwrap();
+            let meta = index.get_mut(&block).unwrap();
             meta.exact_filter_offset = offset;
             meta.exact_filter_m = m;
             assert!(inverted == meta.inverted);
@@ -533,7 +533,7 @@ mod tests {
             self.clone()
         }
 
-        fn shard(&self) -> &[u8] {
+        fn block_id(&self) -> &[u8] {
             &[]
         }
 
@@ -555,7 +555,7 @@ mod tests {
             builder.insert(eq);
         }
         let ribbon = ExactRibbon::from(builder);
-        let filter = ShardedRibbonFilter::from(vec![ribbon]);
+        let filter = PartitionedRibbonFilter::from(vec![ribbon]);
         for i in 0usize..n {
             let eq: Equation<1> = std_eq(i);
             assert!(eq.eval(&filter.solution[0]) == 0);
@@ -566,7 +566,7 @@ mod tests {
     fn test_solve_empty() {
         let builder = RibbonBuilder::<4, Equation<4>>::new(&"0", None);
         let ribbon = ApproximateRibbon::from(builder);
-        let filter = ShardedRibbonFilter::from(vec![ribbon]);
+        let filter = PartitionedRibbonFilter::from(vec![ribbon]);
         assert!(!filter.contains(&std_eq(0)));
     }
 
@@ -602,7 +602,7 @@ mod tests {
         }
 
         let approx_ribbon = ApproximateRibbon::from(approx_builder);
-        let approx_filter = ShardedRibbonFilter::from(vec![approx_ribbon]);
+        let approx_filter = PartitionedRibbonFilter::from(vec![approx_ribbon]);
         let (_, m, rank, exceptions, inverted) = approx_filter
             .index
             .get(&vec![])
@@ -624,7 +624,7 @@ mod tests {
             exact_builder.insert(eq);
         }
         let exact_ribbon = ExactRibbon::from(exact_builder);
-        let exact_filter = ShardedRibbonFilter::from(vec![exact_ribbon]);
+        let exact_filter = PartitionedRibbonFilter::from(vec![exact_ribbon]);
         let (_, m, rank, exceptions, inverted) = exact_filter
             .index
             .get(&vec![])
@@ -652,7 +652,7 @@ mod tests {
         }
 
         let ribbon = ApproximateRibbon::from(builder);
-        let filter = ShardedRibbonFilter::from(vec![ribbon]);
+        let filter = PartitionedRibbonFilter::from(vec![ribbon]);
         let (_offset, _m, rank, _exceptions, inverted) =
             filter.index.get(&vec![]).expect("should have metadata");
         assert!(*rank == 0);

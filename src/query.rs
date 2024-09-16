@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::clubcard::ClubcardShardMeta;
+use crate::clubcard::ClubcardIndexEntry;
 use std::cmp::min;
 
 /// An Equation\<W\> is a representation of a GF(2) linear functional
@@ -101,8 +101,8 @@ pub trait Filterable<const W: usize> {
     ///     (3) b is zero if and only if the item should be in the filter, and b = 1 otherwise.
     fn as_equation(&self, m: usize) -> Equation<W>;
 
-    /// The shard that this item belongs in.
-    fn shard(&self) -> &[u8];
+    /// The block that this item belongs in.
+    fn block_id(&self) -> &[u8];
 
     /// A unique identifier for this item. If this item cannot be inserted into the linear system,
     /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
@@ -119,14 +119,14 @@ pub trait Filterable<const W: usize> {
 /// needs a Filterable to construct a filter, but a Queryable suffices to query a filter.
 /// A default implementation is provided for any Filterable.
 pub trait Queryable<const W: usize> {
-    /// Given the metadata describing a shard of a clubcard computes h(self).
-    fn as_approx_query(&self, meta: &ClubcardShardMeta) -> Equation<W>;
+    /// Given the metadata describing a block of a clubcard computes h(self).
+    fn as_approx_query(&self, meta: &ClubcardIndexEntry) -> Equation<W>;
 
-    /// Given the metadata describing a shard of a clubcard computes g(self).
-    fn as_exact_query(&self, meta: &ClubcardShardMeta) -> Equation<W>;
+    /// Given the metadata describing a block of a clubcard computes g(self).
+    fn as_exact_query(&self, meta: &ClubcardIndexEntry) -> Equation<W>;
 
-    /// The shard that this item belongs in.
-    fn shard(&self) -> &[u8];
+    /// The block that this item belongs in.
+    fn block_id(&self) -> &[u8];
 
     /// A unique identifier for this item. If this item cannot be inserted into the linear system,
     /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
@@ -135,21 +135,21 @@ pub trait Queryable<const W: usize> {
 }
 
 impl<const W: usize, T: Filterable<W>> Queryable<W> for T {
-    fn as_approx_query(&self, meta: &ClubcardShardMeta) -> Equation<W> {
+    fn as_approx_query(&self, meta: &ClubcardIndexEntry) -> Equation<W> {
         let mut approx_eq = self.as_equation(meta.approx_filter_m);
         approx_eq.s += meta.approx_filter_offset;
         approx_eq
     }
 
-    fn as_exact_query(&self, meta: &ClubcardShardMeta) -> Equation<W> {
+    fn as_exact_query(&self, meta: &ClubcardIndexEntry) -> Equation<W> {
         let mut approx_eq = self.as_equation(meta.exact_filter_m);
         approx_eq.s += meta.exact_filter_offset;
         approx_eq
     }
 
-    /// The shard that this item belongs in.
-    fn shard(&self) -> &[u8] {
-        Filterable::shard(self)
+    /// The block that this item belongs in.
+    fn block_id(&self) -> &[u8] {
+        Filterable::block_id(self)
     }
 
     /// A unique identifier for this item. If this item cannot be inserted into the linear system,

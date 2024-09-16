@@ -61,7 +61,7 @@ impl Filterable<4> for CRLiteKey {
         Equation { s, a, b }
     }
 
-    fn shard(&self) -> &[u8] {
+    fn block_id(&self) -> &[u8] {
         self.issuer.as_ref()
     }
 
