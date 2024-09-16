@@ -15,7 +15,7 @@ pub struct Equation<const W: usize> {
     pub(crate) s: usize,    // the row number
     pub(crate) a: [u64; W], // the non-trivial columns
     pub(crate) b: u8,       // the constant term
-                 // TODO? save some space by using one bit of s for b.
+                            // TODO? save some space by using one bit of s for b.
 }
 
 impl<const W: usize> Equation<W> {
@@ -29,7 +29,11 @@ impl<const W: usize> Equation<W> {
 
     /// Construct the equation a(x) = 0.
     pub fn zero() -> Self {
-        Equation { s: 0, a: [0u64; W], b: 0 }
+        Equation {
+            s: 0,
+            a: [0u64; W],
+            b: 0,
+        }
     }
 
     /// Is this a(x) = 1 or a(x) = 0?

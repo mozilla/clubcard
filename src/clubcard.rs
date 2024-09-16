@@ -38,16 +38,17 @@ pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardShardMeta>;
 
 /// A queryable Clubcard
 #[derive(Serialize, Deserialize)]
-pub struct Clubcard {
+pub struct Clubcard<const W: usize, T: Queryable<W>> {
     /// Shard lookup table
-    pub index: ClubcardIndex,
+    pub(crate) index: ClubcardIndex,
     /// The matrix X
-    pub approx_filter: Vec<Vec<u64>>,
+    pub(crate) approx_filter: Vec<Vec<u64>>,
     /// The matrix Y
-    pub exact_filter: Vec<u64>,
+    pub(crate) exact_filter: Vec<u64>,
+    pub(crate) phantom: std::marker::PhantomData<T>,
 }
 
-impl fmt::Display for Clubcard {
+impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let approx_size = 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>();
         let exact_size = 8 * self.exact_filter.len();
@@ -64,16 +65,20 @@ impl fmt::Display for Clubcard {
             exact_size
         )?;
         writeln!(f, "- exceptions: {}", exceptions)?;
-        writeln!(f, "- Serialized size: {}", self.to_bytes().map_or(0, |x| x.len()))
+        writeln!(
+            f,
+            "- Serialized size: {}",
+            self.to_bytes().map_or(0, |x| x.len())
+        )
     }
 }
 
-impl Clubcard {
+impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     const SERIALIZATION_VERSION: u16 = 0xffff;
 
     /// Serialize this clubcard.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ClubcardError> {
-        let mut out = u16::to_le_bytes(Clubcard::SERIALIZATION_VERSION).to_vec();
+        let mut out = u16::to_le_bytes(Self::SERIALIZATION_VERSION).to_vec();
         bincode::serialize_into(&mut out, self).map_err(|_| ClubcardError::Serialize)?;
         Ok(out)
     }
@@ -85,14 +90,14 @@ impl Clubcard {
             return Err(ClubcardError::Deserialize);
         };
         let version = u16::from_le_bytes(version_bytes);
-        if version != Clubcard::SERIALIZATION_VERSION {
+        if version != Self::SERIALIZATION_VERSION {
             return Err(ClubcardError::UnsupportedVersion);
         }
         bincode::deserialize(rest).map_err(|_| ClubcardError::Deserialize)
     }
 
     /// Check whether item is in the set encoded by this clubcard.
-    pub fn contains<const W: usize>(&self, item: &impl Queryable<W>) -> bool {
+    pub fn contains(&self, item: &T) -> bool {
         let Some(meta) = self.index.get(item.shard()) else {
             return false;
         };

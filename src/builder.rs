@@ -460,7 +460,7 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         self.exact_filter = Some(ShardedRibbonFilter::from(ribbons));
     }
 
-    pub fn build(self) -> Clubcard {
+    pub fn build(self) -> Clubcard<W, T> {
         let mut index: ClubcardIndex = BTreeMap::new();
 
         assert!(self.approx_filter.is_some());
@@ -492,10 +492,11 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         assert!(exact_filter.solution.len() == 1);
         let exact_filter = exact_filter.solution.pop().unwrap();
 
-        Clubcard {
+        Clubcard::<W, T> {
             index,
             approx_filter: approx_filter.solution,
             exact_filter,
+            phantom: std::marker::PhantomData,
         }
     }
 }
@@ -716,7 +717,10 @@ mod tests {
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
 
         let clubcard = clubcard_builder.build();
-        let size = 8 * clubcard.to_bytes().expect("serialization should succeed").len();
+        let size = 8 * clubcard
+            .to_bytes()
+            .expect("serialization should succeed")
+            .len();
         println!("Serialized clubcard size: {}kB", size / 8 / 1024);
 
         let sum_subset_sizes: usize = subset_sizes.iter().sum();
