@@ -423,7 +423,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
 }
 
 /// A pair of ribbon filters that, together, solve the exact membership query problem.
-pub struct ClubcardBuilder<const W: usize, T: Filterable<W> + Queryable<W>> {
+pub struct ClubcardBuilder<const W: usize, T: Filterable<W>> {
     /// An approximate membership query filter to whittle down the universe
     /// to a managable size.
     approx_filter: Option<PartitionedRibbonFilter<W, T, Approximate>>,
@@ -432,7 +432,7 @@ pub struct ClubcardBuilder<const W: usize, T: Filterable<W> + Queryable<W>> {
     exact_filter: Option<PartitionedRibbonFilter<W, T, Exact>>,
 }
 
-impl<const W: usize, T: Filterable<W> + Queryable<W>> Default for ClubcardBuilder<W, T> {
+impl<const W: usize, T: Filterable<W>> Default for ClubcardBuilder<W, T> {
     fn default() -> Self {
         ClubcardBuilder {
             approx_filter: None,
@@ -441,7 +441,7 @@ impl<const W: usize, T: Filterable<W> + Queryable<W>> Default for ClubcardBuilde
     }
 }
 
-impl<const W: usize, T: Filterable<W> + Queryable<W>> ClubcardBuilder<W, T> {
+impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
     pub fn new() -> Self {
         ClubcardBuilder::default()
     }
@@ -462,11 +462,11 @@ impl<const W: usize, T: Filterable<W> + Queryable<W>> ClubcardBuilder<W, T> {
         self.exact_filter = Some(PartitionedRibbonFilter::from(ribbons));
     }
 
-    pub fn build(
+    pub fn build<U: Queryable<W>>(
         self,
-        universe_metadata: T::UniverseMetadata,
-        partition_metadata: T::PartitionMetadata,
-    ) -> Clubcard<W, T> {
+        universe_metadata: U::UniverseMetadata,
+        partition_metadata: U::PartitionMetadata,
+    ) -> Clubcard<W, U> {
         let mut index: ClubcardIndex = BTreeMap::new();
 
         assert!(self.approx_filter.is_some());
@@ -694,7 +694,7 @@ mod tests {
         for (i, n) in subset_sizes.iter().enumerate() {
             let mut r = clubcard_builder.get_approx_builder(&[i as u8; 32]);
             for j in 0usize..*n {
-                let eq = CRLiteKey::revoked([i as u8; 32], j.to_le_bytes().to_vec());
+                let eq = CRLiteBuilderItem::revoked([i as u8; 32], j.to_le_bytes().to_vec());
                 r.insert(eq);
             }
             r.set_universe_size(universe_size);
@@ -718,9 +718,9 @@ mod tests {
             let mut r = clubcard_builder.get_exact_builder(&[i as u8; 32]);
             for j in 0usize..universe_size {
                 let item = if j < *n {
-                    CRLiteKey::revoked([i as u8; 32], j.to_le_bytes().to_vec())
+                    CRLiteBuilderItem::revoked([i as u8; 32], j.to_le_bytes().to_vec())
                 } else {
-                    CRLiteKey::not_revoked([i as u8; 32], j.to_le_bytes().to_vec())
+                    CRLiteBuilderItem::not_revoked([i as u8; 32], j.to_le_bytes().to_vec())
                 };
                 r.insert(item);
             }
@@ -736,7 +736,8 @@ mod tests {
 
         clubcard_builder.collect_exact_ribbons(exact_ribbons);
 
-        let clubcard = clubcard_builder.build(Default::default(), Default::default());
+        let clubcard =
+            clubcard_builder.build::<CRLiteQuery>(Default::default(), Default::default());
         let size = 8 * clubcard
             .to_bytes()
             .expect("serialization should succeed")
@@ -759,8 +760,13 @@ mod tests {
         let mut included = 0;
         let mut excluded = 0;
         for i in 0..subset_sizes.len() {
+            let issuer = [i as u8; 32];
             for j in 0..universe_size {
-                let item = CRLiteKey::query([i as u8; 32], j.to_le_bytes().to_vec());
+                let serial = j.to_le_bytes();
+                let item = CRLiteQuery {
+                    issuer: &issuer,
+                    serial: &serial,
+                };
                 match clubcard.contains(&item) {
                     SetMembership::Member => included += 1,
                     SetMembership::Nonmember => excluded += 1,

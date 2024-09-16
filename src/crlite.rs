@@ -1,9 +1,9 @@
-use crate::{Equation, Filterable, Queryable};
+use crate::{AsQuery, ClubcardIndexEntry, Equation, Filterable, Queryable};
 use sha2::{Digest, Sha256};
 use std::cmp::max;
 
 #[derive(Clone, Debug)]
-pub struct CRLiteKey {
+pub struct CRLiteBuilderItem {
     /// issuer spki hash
     pub issuer: [u8; 32],
     /// serial number. TODO: smallvec?
@@ -12,7 +12,7 @@ pub struct CRLiteKey {
     pub revoked: bool,
 }
 
-impl CRLiteKey {
+impl CRLiteBuilderItem {
     pub fn revoked(issuer: [u8; 32], serial: Vec<u8>) -> Self {
         Self {
             issuer,
@@ -28,17 +28,35 @@ impl CRLiteKey {
             revoked: false,
         }
     }
+}
 
-    pub fn query(issuer: [u8; 32], serial: Vec<u8>) -> Self {
-        Self {
-            issuer,
-            serial,
-            revoked: false, /* unused */
-        }
+impl Filterable<4> for CRLiteBuilderItem {
+    fn as_equation(&self, m: usize) -> Equation<4> {
+        let mut eq = CRLiteQuery::from(self).as_equation(m);
+        eq.b = if self.revoked { 0 } else { 1 };
+        eq
+    }
+
+    fn block_id(&self) -> &[u8] {
+        self.issuer.as_ref()
+    }
+
+    fn discriminant(&self) -> &[u8] {
+        &self.serial
+    }
+
+    fn included(&self) -> bool {
+        self.revoked
     }
 }
 
-impl Filterable<4> for CRLiteKey {
+#[derive(Clone, Debug)]
+pub struct CRLiteQuery<'a> {
+    pub issuer: &'a [u8; 32],
+    pub serial: &'a [u8],
+}
+
+impl<'a> CRLiteQuery<'a> {
     fn as_equation(&self, m: usize) -> Equation<4> {
         let mut digest = [0u8; 32];
         let mut hasher = Sha256::new();
@@ -57,24 +75,41 @@ impl Filterable<4> for CRLiteKey {
         }
         a[0] |= 1;
         let s = (a[3] as usize) % max(1, m);
-        let b = if self.revoked { 0 } else { 1 };
-        Equation { s, a, b }
-    }
-
-    fn block_id(&self) -> &[u8] {
-        self.issuer.as_ref()
-    }
-
-    fn discriminant(&self) -> &[u8] {
-        &self.serial
-    }
-
-    fn included(&self) -> bool {
-        self.revoked
+        Equation { s, a, b: 0 }
     }
 }
 
-impl Queryable<4> for CRLiteKey {
+impl<'a> From<&'a CRLiteBuilderItem> for CRLiteQuery<'a> {
+    fn from(item: &'a CRLiteBuilderItem) -> Self {
+        Self {
+            issuer: &item.issuer,
+            serial: &item.serial,
+        }
+    }
+}
+
+impl<'a> AsQuery<4> for CRLiteQuery<'a> {
+    fn as_approx_query(&self, meta: &ClubcardIndexEntry) -> Equation<4> {
+        let mut approx_eq = self.as_equation(meta.approx_filter_m);
+        approx_eq.s += meta.approx_filter_offset;
+        approx_eq
+    }
+
+    fn as_exact_query(&self, meta: &ClubcardIndexEntry) -> Equation<4> {
+        let mut exact_eq = self.as_equation(meta.exact_filter_m);
+        exact_eq.s += meta.exact_filter_offset;
+        exact_eq
+    }
+
+    /// A unique identifier for this item. If this item cannot be inserted into the linear system,
+    /// then we will store its `included()` status in a secondary retrieval mechanism keyed by
+    /// `discriminant()`.
+    fn discriminant(&self) -> &[u8] {
+        &self.serial
+    }
+}
+
+impl<'a> Queryable<4> for CRLiteQuery<'a> {
     // TODO: Replace this with HashMap<ct log id, (min timestamp, max timestamp)>
     type UniverseMetadata = ();
 

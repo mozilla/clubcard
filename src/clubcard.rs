@@ -106,7 +106,16 @@ where
     }
 
     /// Check whether item is in the set encoded by this clubcard.
-    pub fn contains(&self, item: &T) -> SetMembership {
+    pub fn contains<U>(&self, item: &U) -> SetMembership
+    where
+        // TODO: The typical case is U=T here, though I don't see how to juggle the lifetimes.
+        // Maybe it's useful to allow queries against any type with consistent
+        U: Queryable<
+            W,
+            UniverseMetadata = T::UniverseMetadata,
+            PartitionMetadata = T::PartitionMetadata,
+        >, // metadata?
+    {
         if !item.in_universe(&self.universe_metadata) {
             return SetMembership::NotInUniverse;
         };

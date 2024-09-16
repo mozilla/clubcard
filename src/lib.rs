@@ -49,7 +49,7 @@ pub mod builder;
 pub mod crlite;
 
 mod query;
-pub use query::{Equation, Filterable, Queryable};
+pub use query::{AsQuery, Equation, Filterable, Queryable};
 
 mod clubcard;
 pub use clubcard::{Clubcard, ClubcardIndexEntry, SetMembership};
