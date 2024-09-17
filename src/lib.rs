@@ -52,4 +52,4 @@ mod query;
 pub use query::{AsQuery, Equation, Filterable, Queryable};
 
 mod clubcard;
-pub use clubcard::{Clubcard, ClubcardIndexEntry, SetMembership};
+pub use clubcard::{Clubcard, ClubcardIndexEntry, Membership};

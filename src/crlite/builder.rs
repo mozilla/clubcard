@@ -227,7 +227,7 @@ mod tests {
         };
         assert!(matches!(
             clubcard.contains(&item),
-            SetMembership::NotInUniverse
+            Membership::NotInUniverse
         ));
 
         // Test that calling contains() without a timestamp in a covered interval results in a
@@ -238,7 +238,7 @@ mod tests {
             serial: &revoked_serial,
             log_timestamps: Some(&timestamps),
         };
-        assert!(matches!(clubcard.contains(&item), SetMembership::Member));
+        assert!(matches!(clubcard.contains(&item), Membership::Member));
 
         // Test that calling contains() without a timestamp in a covered interval results in a
         // Member return.
@@ -248,7 +248,7 @@ mod tests {
             serial: &nonrevoked_serial,
             log_timestamps: Some(&timestamps),
         };
-        assert!(matches!(clubcard.contains(&item), SetMembership::Nonmember));
+        assert!(matches!(clubcard.contains(&item), Membership::Nonmember));
 
         // Test that calling contains() without a timestamp in a covered interval results in a
         // Member return.
@@ -260,7 +260,7 @@ mod tests {
         };
         assert!(matches!(
             clubcard.contains(&item),
-            SetMembership::NotInUniverse
+            Membership::NotInUniverse
         ));
     }
 }

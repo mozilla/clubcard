@@ -15,18 +15,18 @@ pub enum ClubcardError {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum SetMembership {
+pub enum Membership {
     Member,
     Nonmember,
     NotInUniverse,
     NoData,
 }
 
-impl From<bool> for SetMembership {
-    fn from(b: bool) -> SetMembership {
+impl From<bool> for Membership {
+    fn from(b: bool) -> Membership {
         match b {
-            true => SetMembership::Member,
-            false => SetMembership::Nonmember,
+            true => Membership::Member,
+            false => Membership::Nonmember,
         }
     }
 }
@@ -164,14 +164,14 @@ where
     }
 
     /// Check that the item is in the appropriate universe, and then perform a membership query.
-    pub fn contains(&self, item: &T) -> SetMembership {
+    pub fn contains(&self, item: &T) -> Membership {
         if !item.in_universe(&self.universe_metadata) {
-            return SetMembership::NotInUniverse;
+            return Membership::NotInUniverse;
         };
 
         match item.block_id(&self.partition_metadata) {
             Some(id) if self.index.contains_key(id) => (),
-            _ => return SetMembership::NoData,
+            _ => return Membership::NoData,
         };
 
         self.unchecked_contains(item).into()
