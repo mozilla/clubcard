@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use crate::crlite::{CRLiteCoverage, CRLiteQuery};
+use crate::AsQuery;
 use crate::Equation;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -68,26 +69,6 @@ impl CRLiteBuilderItem {
     }
 }
 
-impl Filterable<4> for CRLiteBuilderItem {
-    fn as_equation(&self, m: usize) -> Equation<4> {
-        let mut eq = CRLiteQuery::from(self).as_equation(m);
-        eq.b = if self.revoked { 0 } else { 1 };
-        eq
-    }
-
-    fn block_id(&self) -> &[u8] {
-        self.issuer.as_ref()
-    }
-
-    fn discriminant(&self) -> &[u8] {
-        &self.serial
-    }
-
-    fn included(&self) -> bool {
-        self.revoked
-    }
-}
-
 impl<'a> From<&'a CRLiteBuilderItem> for CRLiteQuery<'a> {
     fn from(item: &'a CRLiteBuilderItem) -> Self {
         Self {
@@ -95,6 +76,26 @@ impl<'a> From<&'a CRLiteBuilderItem> for CRLiteQuery<'a> {
             serial: &item.serial,
             log_timestamps: None,
         }
+    }
+}
+
+impl AsQuery<4> for CRLiteBuilderItem {
+    fn as_query(&self, m: usize) -> Equation<4> {
+        CRLiteQuery::from(self).as_query(m)
+    }
+
+    fn block_id(&self) -> &[u8] {
+        &self.issuer
+    }
+
+    fn discriminant(&self) -> &[u8] {
+        &self.serial
+    }
+}
+
+impl Filterable<4> for CRLiteBuilderItem {
+    fn included(&self) -> bool {
+        self.revoked
     }
 }
 

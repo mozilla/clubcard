@@ -225,7 +225,8 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
 impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact> {
     /// Hash the item to an Equation and insert it into the system.
     pub fn insert(&mut self, item: T) -> bool {
-        let eq = item.as_equation(self.m);
+        let mut eq = item.as_query(self.m);
+        eq.b = if item.included() { 0 } else { 1 };
         assert!(eq.is_zero() || eq.a[0] & 1 == 1);
         let rv = self.insert_equation(eq);
         if !rv {
@@ -347,7 +348,7 @@ impl<const W: usize, T: Filterable<W>, Approximate> PartitionedRibbonFilter<W, T
             if *m == 0 {
                 return false;
             }
-            let mut eq = item.as_equation(*m);
+            let mut eq = item.as_query(*m);
             eq.s += *offset;
             for i in 0..*rank {
                 if eq.eval(&self.solution[i]) != 0 {
@@ -519,7 +520,7 @@ mod tests {
     pub fn std_eq<const W: usize>(i: usize) -> Equation<W> {
         let mut a = [0u64; W];
         a[0] = 1;
-        Equation::new(i, a, 0)
+        Equation::homogeneous(i, a)
     }
 
     // Construct an random aligned equation using the given distribution for s.
@@ -531,11 +532,11 @@ mod tests {
             *a_i = rng.gen();
         }
         a[0] |= 1;
-        Equation::new(s, a, rng.gen::<u8>() & 1)
+        Equation::inhomogeneous(s, a, rng.gen::<u8>() & 1)
     }
 
-    impl<const W: usize> Filterable<W> for Equation<W> {
-        fn as_equation(&self, _m: usize) -> Equation<W> {
+    impl<const W: usize> AsQuery<W> for Equation<W> {
+        fn as_query(&self, _m: usize) -> Equation<W> {
             self.clone()
         }
 
@@ -546,7 +547,9 @@ mod tests {
         fn discriminant(&self) -> &[u8] {
             unsafe { std::mem::transmute(&self.a[..]) }
         }
+    }
 
+    impl<const W: usize> Filterable<W> for Equation<W> {
         fn included(&self) -> bool {
             self.b == 0
         }
@@ -556,8 +559,8 @@ mod tests {
         type UniverseMetadata = ();
         type PartitionMetadata = ();
 
-        fn block_id(&self, _meta: &Self::PartitionMetadata) -> Option<&[u8]> {
-            Some(Filterable::block_id(self))
+        fn get_block_id(&self, _meta: &Self::PartitionMetadata) -> Option<&[u8]> {
+            Some(self.block_id())
         }
 
         fn in_universe(&self, _meta: &Self::UniverseMetadata) -> bool {

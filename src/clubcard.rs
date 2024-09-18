@@ -81,8 +81,7 @@ impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
     }
 }
 
-impl<const W: usize, T: Queryable<W>> Clubcard<W, T>
-{
+impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     /// Perform a membership query without checking whether the item is in the universe.
     /// The result is undefined if the item is not in the universe. The result is also
     /// undefined if U's implementation of AsQuery differs from T's.
@@ -90,7 +89,7 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T>
     where
         U: Queryable<W, PartitionMetadata = T::PartitionMetadata>,
     {
-        let Some(block_id) = item.block_id(&self.partition_metadata) else {
+        let Some(block_id) = item.get_block_id(&self.partition_metadata) else {
             return false;
         };
 
@@ -137,7 +136,7 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T>
             return Membership::NotInUniverse;
         };
 
-        match item.block_id(&self.partition_metadata) {
+        match item.get_block_id(&self.partition_metadata) {
             Some(id) if self.index.contains_key(id) => (),
             _ => return Membership::NoData,
         };

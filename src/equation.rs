@@ -11,15 +11,21 @@ use std::cmp::min;
 /// (Note: a_i above denotes the i-th bit, not the i'th 64-bit limb.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Equation<const W: usize> {
-    pub(crate) s: usize,    // the row number
-    pub(crate) a: [u64; W], // the non-trivial columns
-    pub(crate) b: u8,       // the constant term
-                            // TODO? save some space by using one bit of s for b.
+    pub s: usize,    // the row number
+    pub a: [u64; W], // the non-trivial columns
+    pub b: u8,       // the constant term
 }
 
 impl<const W: usize> Equation<W> {
-    /// Construct the aligned equation equivalent to Equation { s, a, b }
-    pub fn new(s: usize, a: [u64; W], b: u8) -> Equation<W> {
+    /// Construct the equation a(x) = sum_{i=s}^{s+64*W} a_i x^i.
+    /// The result is aligned.
+    pub fn homogeneous(s: usize, a: [u64; W]) -> Equation<W> {
+        Equation::inhomogeneous(s, a, 0)
+    }
+
+    /// Construct the equation a(x) = b + sum_{i=s}^{s+64*W} a_i x^i.
+    /// The result is aligned.
+    pub fn inhomogeneous(s: usize, a: [u64; W], b: u8) -> Equation<W> {
         let mut eq = Equation { s: 0, a, b };
         eq.add(&Equation::zero());
         eq.s += s;
