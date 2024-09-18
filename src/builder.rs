@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
 use crate::{
     clubcard::ClubcardIndex, Clubcard, ClubcardIndexEntry, Equation, Filterable, Queryable,
 };
@@ -176,12 +175,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> fmt::Display for Ribbon<W,
 impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
     /// Construct an empty ribbon to encode a set R of size `subset_size` in a universe U of size
     /// `universe_size`.
-    fn new(
-        id: &[u8],
-        subset_size: usize,
-        universe_size: usize,
-        inverted: bool,
-    ) -> Self {
+    fn new(id: &[u8], subset_size: usize, universe_size: usize, inverted: bool) -> Self {
         assert!(subset_size <= universe_size);
 
         // TODO: Tune epsilon as a function of the inputs. Numerical experiments?
@@ -482,7 +476,7 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
         self,
         universe: U::UniverseMetadata,
         partition: U::PartitionMetadata,
-    ) -> Clubcard<W, U> {
+    ) -> Clubcard<W, U::UniverseMetadata, U::PartitionMetadata> {
         let mut index: ClubcardIndex = BTreeMap::new();
 
         assert!(self.approx_filter.is_some());

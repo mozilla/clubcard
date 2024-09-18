@@ -48,11 +48,11 @@ pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardIndexEntry>;
 
 /// A queryable Clubcard
 #[derive(Serialize, Deserialize)]
-pub struct Clubcard<const W: usize, T: Queryable<W>> {
+pub struct Clubcard<const W: usize, UniverseMetadata, PartitionMetadata> {
     /// Metadata for determining whether a Queryable is in the encoded universe.
-    pub(crate) universe: T::UniverseMetadata,
+    pub(crate) universe: UniverseMetadata,
     /// Metadata for determining the block to which a Queryable belongs.
-    pub(crate) partition: T::PartitionMetadata,
+    pub(crate) partition: PartitionMetadata,
     /// Lookup table for per-block metadata.
     pub(crate) index: ClubcardIndex,
     /// The matrix X
@@ -61,7 +61,9 @@ pub struct Clubcard<const W: usize, T: Queryable<W>> {
     pub(crate) exact_filter: Vec<u64>,
 }
 
-impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
+impl<const W: usize, UniverseMetadata, PartitionMetadata> fmt::Display
+    for Clubcard<W, UniverseMetadata, PartitionMetadata>
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let approx_size = 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>();
         let exact_size = 8 * self.exact_filter.len();
@@ -81,13 +83,15 @@ impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
     }
 }
 
-impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
+impl<const W: usize, UniverseMetadata, PartitionMetadata>
+    Clubcard<W, UniverseMetadata, PartitionMetadata>
+{
     /// Perform a membership query without checking whether the item is in the universe.
     /// The result is undefined if the item is not in the universe. The result is also
     /// undefined if U's implementation of AsQuery differs from T's.
-    pub fn unchecked_contains<U>(&self, item: &U) -> bool
+    pub fn unchecked_contains<T>(&self, item: &T) -> bool
     where
-        U: Queryable<W, PartitionMetadata = T::PartitionMetadata>,
+        T: Queryable<W, PartitionMetadata = PartitionMetadata>,
     {
         let Some(meta) = self.index.get(item.block()) else {
             return false;
@@ -127,7 +131,10 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     }
 
     /// Check that the item is in the appropriate universe, and then perform a membership query.
-    pub fn contains(&self, item: &T) -> Membership {
+    pub fn contains<T>(&self, item: &T) -> Membership
+    where
+        T: Queryable<W, UniverseMetadata = UniverseMetadata, PartitionMetadata = PartitionMetadata>,
+    {
         if !item.in_universe(&self.universe) {
             return Membership::NotInUniverse;
         };
@@ -139,11 +146,11 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
         self.unchecked_contains(item).into()
     }
 
-    pub fn universe(&self) -> &T::UniverseMetadata {
+    pub fn universe(&self) -> &UniverseMetadata {
         &self.universe
     }
 
-    pub fn partition(&self) -> &T::PartitionMetadata {
+    pub fn partition(&self) -> &PartitionMetadata {
         &self.partition
     }
 }

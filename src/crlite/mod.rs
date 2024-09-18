@@ -8,4 +8,4 @@ mod builder;
 pub use builder::CRLiteBuilderItem;
 
 mod query;
-pub use query::*;
+pub use query::{CRLiteClubcard, CRLiteCoverage, CRLiteQuery};
