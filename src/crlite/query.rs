@@ -16,13 +16,13 @@ pub struct CRLiteCoverage(pub HashMap<LogId, TimestampInterval>);
 
 #[derive(Clone, Debug)]
 pub struct CRLiteQuery<'a> {
-    pub issuer: &'a [u8; 32],
-    pub serial: &'a [u8],
-    pub log_timestamps: Option<&'a [([u8; 32], u64)]>,
+    pub(crate) issuer: &'a [u8; 32],
+    pub(crate) serial: &'a [u8],
+    pub(crate) log_timestamps: Option<&'a [([u8; 32], u64)]>,
 }
 
 impl<'a> AsQuery<4> for CRLiteQuery<'a> {
-    fn block_id(&self) -> &[u8] {
+    fn block(&self) -> &[u8] {
         self.issuer.as_ref()
     }
 
@@ -59,10 +59,6 @@ impl<'a> Queryable<4> for CRLiteQuery<'a> {
     // CRLiteKey knows its issuer. So there's no need for additional
     // partition metadata.
     type PartitionMetadata = ();
-
-    fn get_block_id(&self, _meta: &Self::PartitionMetadata) -> Option<&[u8]> {
-        Some(self.issuer.as_ref())
-    }
 
     fn in_universe(&self, universe: &Self::UniverseMetadata) -> bool {
         let Some(log_timestamps) = self.log_timestamps else {

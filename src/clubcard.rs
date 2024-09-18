@@ -50,9 +50,9 @@ pub type ClubcardIndex = BTreeMap</* block id */ Vec<u8>, ClubcardIndexEntry>;
 #[derive(Serialize, Deserialize)]
 pub struct Clubcard<const W: usize, T: Queryable<W>> {
     /// Metadata for determining whether a Queryable is in the encoded universe.
-    pub(crate) universe_metadata: T::UniverseMetadata,
+    pub(crate) universe: T::UniverseMetadata,
     /// Metadata for determining the block to which a Queryable belongs.
-    pub(crate) partition_metadata: T::PartitionMetadata,
+    pub(crate) partition: T::PartitionMetadata,
     /// Lookup table for per-block metadata.
     pub(crate) index: ClubcardIndex,
     /// The matrix X
@@ -89,11 +89,7 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
     where
         U: Queryable<W, PartitionMetadata = T::PartitionMetadata>,
     {
-        let Some(block_id) = item.get_block_id(&self.partition_metadata) else {
-            return false;
-        };
-
-        let Some(meta) = self.index.get(block_id) else {
+        let Some(meta) = self.index.get(item.block()) else {
             return false;
         };
 
@@ -132,15 +128,22 @@ impl<const W: usize, T: Queryable<W>> Clubcard<W, T> {
 
     /// Check that the item is in the appropriate universe, and then perform a membership query.
     pub fn contains(&self, item: &T) -> Membership {
-        if !item.in_universe(&self.universe_metadata) {
+        if !item.in_universe(&self.universe) {
             return Membership::NotInUniverse;
         };
 
-        match item.get_block_id(&self.partition_metadata) {
-            Some(id) if self.index.contains_key(id) => (),
-            _ => return Membership::NoData,
+        if !self.index.contains_key(item.block()) {
+            return Membership::NoData;
         };
 
         self.unchecked_contains(item).into()
+    }
+
+    pub fn universe(&self) -> &T::UniverseMetadata {
+        &self.universe
+    }
+
+    pub fn partition(&self) -> &T::PartitionMetadata {
+        &self.partition
     }
 }

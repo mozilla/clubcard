@@ -44,11 +44,11 @@ impl CRLiteCoverage {
 
 pub struct CRLiteBuilderItem {
     /// issuer spki hash
-    pub issuer: [u8; 32],
+    issuer: [u8; 32],
     /// serial number. TODO: smallvec?
-    pub serial: Vec<u8>,
+    serial: Vec<u8>,
     /// revocation status
-    pub revoked: bool,
+    revoked: bool,
 }
 
 impl CRLiteBuilderItem {
@@ -84,7 +84,7 @@ impl AsQuery<4> for CRLiteBuilderItem {
         CRLiteQuery::from(self).as_query(m)
     }
 
-    fn block_id(&self) -> &[u8] {
+    fn block(&self) -> &[u8] {
         &self.issuer
     }
 
@@ -114,7 +114,7 @@ mod tests {
         let mut clubcard_builder = ClubcardBuilder::new();
         let mut approx_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
-            let mut r = clubcard_builder.get_approx_builder(&[i as u8; 32]);
+            let mut r = clubcard_builder.new_approx_builder(&[i as u8; 32]);
             for j in 0usize..*n {
                 let eq = CRLiteBuilderItem::revoked([i as u8; 32], j.to_le_bytes().to_vec());
                 r.insert(eq);
@@ -137,7 +137,7 @@ mod tests {
 
         let mut exact_builders = vec![];
         for (i, n) in subset_sizes.iter().enumerate() {
-            let mut r = clubcard_builder.get_exact_builder(&[i as u8; 32]);
+            let mut r = clubcard_builder.new_exact_builder(&[i as u8; 32]);
             for j in 0usize..universe_size {
                 let item = if j < *n {
                     CRLiteBuilderItem::revoked([i as u8; 32], j.to_le_bytes().to_vec())
