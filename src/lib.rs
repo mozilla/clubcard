@@ -40,10 +40,10 @@
 //!
 //#![warn(missing_docs)]
 
-#[cfg(any(test, feature = "builder"))]
+#[cfg(feature = "builder")]
 pub mod builder;
 
-#[cfg(any(test, feature = "crlite"))]
+#[cfg(feature = "crlite")]
 pub mod crlite;
 
 mod clubcard;
