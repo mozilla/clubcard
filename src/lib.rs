@@ -46,8 +46,11 @@ pub mod builder;
 #[cfg(any(test, feature = "crlite"))]
 pub mod crlite;
 
-mod query;
-pub use query::{AsQuery, Equation, Filterable, Queryable};
-
 mod clubcard;
 pub use clubcard::{Clubcard, ClubcardIndexEntry, Membership};
+
+mod equation;
+pub use equation::Equation;
+
+mod query;
+pub use query::{AsQuery, Filterable, Queryable};
