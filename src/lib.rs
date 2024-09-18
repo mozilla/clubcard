@@ -40,8 +40,6 @@
 //!
 //#![warn(missing_docs)]
 
-extern crate bincode;
-
 #[cfg(any(test, feature = "builder"))]
 pub mod builder;
 

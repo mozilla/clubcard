@@ -510,8 +510,8 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use crate::builder::*;
+    use crate::*;
     use rand::distributions::{Distribution, Uniform};
     use rand::Rng;
 

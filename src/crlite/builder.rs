@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::Equation;
 use crate::crlite::{CRLiteCoverage, CRLiteQuery};
+use crate::Equation;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -98,7 +98,6 @@ impl<'a> From<&'a CRLiteBuilderItem> for CRLiteQuery<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::builder::*;
@@ -163,18 +162,14 @@ mod tests {
 
         let clubcard =
             clubcard_builder.build::<CRLiteQuery>(CRLiteCoverage(log_coverage), Default::default());
-        let size = 8 * clubcard
-            .to_bytes()
-            .expect("serialization should succeed")
-            .len();
-        println!("Serialized clubcard size: {}kB", size / 8 / 1024);
+        println!("{}", clubcard);
 
         let sum_subset_sizes: usize = subset_sizes.iter().sum();
         let sum_universe_sizes: usize = subset_sizes.len() * universe_size;
         let min_size = (sum_subset_sizes as f64)
             * ((sum_universe_sizes as f64) / (sum_subset_sizes as f64)).log2()
             + 1.44 * ((sum_subset_sizes) as f64);
-        println!("Size overhead {}", size as f64 / min_size);
+        println!("Size lower bound {}", min_size);
         println!("Checking construction");
         println!(
             "\texpecting {} included, {} excluded",

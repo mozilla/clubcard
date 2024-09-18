@@ -7,13 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Debug)]
-pub enum ClubcardError {
-    Deserialize,
-    Serialize,
-    UnsupportedVersion,
-}
-
 #[derive(PartialEq, Eq)]
 pub enum Membership {
     Member,
@@ -88,33 +81,8 @@ impl<const W: usize, T: Queryable<W>> fmt::Display for Clubcard<W, T> {
     }
 }
 
-impl<'de, const W: usize, T: Queryable<W>> Clubcard<W, T>
-where
-    T::PartitionMetadata: Serialize + Deserialize<'de>,
-    T::UniverseMetadata: Serialize + Deserialize<'de>,
+impl<const W: usize, T: Queryable<W>> Clubcard<W, T>
 {
-    const SERIALIZATION_VERSION: u16 = 0xffff;
-
-    /// Serialize this clubcard.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ClubcardError> {
-        let mut out = u16::to_le_bytes(Self::SERIALIZATION_VERSION).to_vec();
-        bincode::serialize_into(&mut out, self).map_err(|_| ClubcardError::Serialize)?;
-        Ok(out)
-    }
-
-    /// Deserialize a clubcard.
-    pub fn from_bytes(bytes: &'de [u8]) -> Result<Self, ClubcardError> {
-        let (version_bytes, rest) = bytes.split_at(std::mem::size_of::<u16>());
-        let Ok(version_bytes) = version_bytes.try_into() else {
-            return Err(ClubcardError::Deserialize);
-        };
-        let version = u16::from_le_bytes(version_bytes);
-        if version != Self::SERIALIZATION_VERSION {
-            return Err(ClubcardError::UnsupportedVersion);
-        }
-        bincode::deserialize(rest).map_err(|_| ClubcardError::Deserialize)
-    }
-
     /// Perform a membership query without checking whether the item is in the universe.
     /// The result is undefined if the item is not in the universe. The result is also
     /// undefined if U's implementation of AsQuery differs from T's.
