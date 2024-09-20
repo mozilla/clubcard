@@ -43,9 +43,6 @@
 #[cfg(feature = "builder")]
 pub mod builder;
 
-#[cfg(feature = "crlite")]
-pub mod crlite;
-
 mod clubcard;
 pub use clubcard::{Clubcard, ClubcardIndexEntry, Membership};
 
