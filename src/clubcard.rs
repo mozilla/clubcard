@@ -154,3 +154,36 @@ impl<const W: usize, UniverseMetadata, PartitionMetadata>
         &self.partition
     }
 }
+
+/// Helper trait for (approximate) heap memory usage analysis in Firefox
+pub trait ApproximateSizeOf {
+    fn approximate_size_of(&self) -> usize
+    where
+        Self: Sized,
+    {
+        size_of::<Self>()
+    }
+}
+
+impl ApproximateSizeOf for () {}
+
+impl ApproximateSizeOf for ClubcardIndex {
+    fn approximate_size_of(&self) -> usize {
+        size_of::<ClubcardIndex>() + self.len() * size_of::<ClubcardIndexEntry>()
+    }
+}
+
+impl<const W: usize, UniverseMetadata, PartitionMetadata> ApproximateSizeOf
+    for Clubcard<W, UniverseMetadata, PartitionMetadata>
+where
+    UniverseMetadata: ApproximateSizeOf,
+    PartitionMetadata: ApproximateSizeOf,
+{
+    fn approximate_size_of(&self) -> usize {
+        self.universe.approximate_size_of()
+            + self.partition.approximate_size_of()
+            + self.index.approximate_size_of()
+            + self.approx_filter.iter().map(|x| x.len()).sum::<usize>()
+            + self.exact_filter.len()
+    }
+}
