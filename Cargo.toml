@@ -3,7 +3,7 @@ name = "clubcard"
 authors = ["John M. Schanck <jschanck@mozilla.com>"]
 version = "0.3.0"
 license = "MPL-2.0"
-repository = "https://github.com/jschanck/clubcard/"
+repository = "https://github.com/mozilla/clubcard/"
 description = "Clubcard is an exact membership query filter for static sets"
 edition = "2021"
 
