@@ -11,5 +11,8 @@ edition = "2021"
 rand = { version = "0.8.5", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 
+[dev-dependencies]
+sha2 = "0.10"
+
 [features]
 builder = ["dep:rand"]
