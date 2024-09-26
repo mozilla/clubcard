@@ -6,6 +6,7 @@ use crate::query::Queryable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::mem::size_of;
 
 #[derive(PartialEq, Eq)]
 pub enum Membership {
