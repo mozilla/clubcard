@@ -401,6 +401,9 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
                     tail = blocks[j].solve(&tail);
                 }
             }
+            while let Some(0) = tail.last() {
+                tail.pop();
+            }
             solution.push(tail);
         }
 
