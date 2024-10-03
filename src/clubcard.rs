@@ -184,7 +184,7 @@ where
         self.universe.approximate_size_of()
             + self.partition.approximate_size_of()
             + self.index.approximate_size_of()
-            + self.approx_filter.iter().map(|x| x.len()).sum::<usize>()
-            + self.exact_filter.len()
+            + 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>()
+            + 8 * self.exact_filter.len()
     }
 }
