@@ -154,6 +154,10 @@ impl<const W: usize, UniverseMetadata, PartitionMetadata>
     pub fn partition(&self) -> &PartitionMetadata {
         &self.partition
     }
+
+    pub fn index(&self) -> &ClubcardIndex {
+        &self.index
+    }
 }
 
 /// Helper trait for (approximate) heap memory usage analysis in Firefox
