@@ -188,7 +188,9 @@ where
         self.universe.approximate_size_of()
             + self.partition.approximate_size_of()
             + self.index.approximate_size_of()
+            + size_of::<Vec<Vec<u8>>>()
             + 8 * self.approx_filter.iter().map(|x| x.len()).sum::<usize>()
+            + size_of::<Vec<u8>>()
             + 8 * self.exact_filter.len()
     }
 }
