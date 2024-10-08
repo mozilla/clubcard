@@ -75,12 +75,12 @@ impl<const W: usize, UniverseMetadata, PartitionMetadata> fmt::Display
             .sum::<usize>();
         writeln!(
             f,
-            "Clubcard of size {} ({} + {})",
+            "Clubcard of size {} ({} + {}) with {} exceptions",
             approx_size + exact_size,
             approx_size,
-            exact_size
-        )?;
-        writeln!(f, "- exceptions: {}", exceptions)
+            exact_size,
+            exceptions
+        )
     }
 }
 
