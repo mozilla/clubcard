@@ -192,7 +192,7 @@ impl<const W: usize, T: Filterable<W>> ApproximateRibbon<W, T> {
 
         Ribbon {
             id: AsRef::<[u8]>::as_ref(id).to_vec(),
-            rows: vec![Equation::zero(); m],
+            rows: vec![],
             m,
             epsilon,
             rank,
@@ -213,7 +213,7 @@ impl<const W: usize, T: Filterable<W>> ExactRibbon<W, T> {
 
         Ribbon {
             id: AsRef::<[u8]>::as_ref(id).to_vec(),
-            rows: vec![Equation::zero(); m],
+            rows: vec![],
             m,
             epsilon,
             rank: 1,
