@@ -158,6 +158,22 @@ impl<const W: usize, UniverseMetadata, PartitionMetadata>
     pub fn index(&self) -> &ClubcardIndex {
         &self.index
     }
+
+    pub fn convert<CompatibleUniverseMetadata, CompatiblePartitionMetadata>(
+        self,
+    ) -> Clubcard<W, CompatibleUniverseMetadata, CompatiblePartitionMetadata>
+    where
+        CompatibleUniverseMetadata: From<UniverseMetadata>,
+        CompatiblePartitionMetadata: From<PartitionMetadata>,
+    {
+        Clubcard::<W, CompatibleUniverseMetadata, CompatiblePartitionMetadata> {
+            universe: self.universe.into(),
+            partition: self.partition.into(),
+            index: self.index,
+            approx_filter: self.approx_filter,
+            exact_filter: self.exact_filter,
+        }
+    }
 }
 
 /// Helper trait for (approximate) heap memory usage analysis in Firefox
