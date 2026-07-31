@@ -57,18 +57,32 @@ impl<'a, const W: usize, T: Filterable<W>> RibbonBuilder<'a, W, T> {
     /// Queue `item` for insertion into the ribbon (if it is contained in the provided filter).
     pub fn insert(&mut self, item: T) {
         if let Some(filter) = self.filter {
-            if filter.contains(&item) {
-                self.items.push(item);
+            // Discard items that the approximate filter gives a definitive answer for. Note
+            // that this uses the filter's output before inversion: the items that an exact
+            // filter needs to resolve are those that the approximate filter maps to 0.
+            if !filter.contains_before_inversion(&item) {
+                return;
             }
-        } else {
-            self.items.push(item);
         }
+        self.items.push(item);
     }
 
     /// Set the size of the universe. This only needs to be called if you
     /// are constructing an ApproximateRibbon.
     pub fn set_universe_size(&mut self, universe_size: usize) {
         self.universe_size = universe_size;
+    }
+
+    /// Encode U \ R rather than R, and set the inverted flag in this block's metadata so
+    /// that queries are negated. The caller should insert the elements of U \ R.
+    ///
+    /// A ribbon's size is proportional to the size of the set that it encodes, so this is
+    /// worthwhile when R is more than half of U.
+    ///
+    /// This only needs to be called if you are constructing an ApproximateRibbon. An
+    /// ExactRibbon inherits the inverted flag from the approximate filter that it refines.
+    pub fn set_inverted(&mut self, inverted: bool) {
+        self.inverted = inverted;
     }
 }
 
@@ -110,19 +124,26 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>> for Exa
     /// exact encoding of R-membership using a pair of filters of total size ~(r+2)|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ExactRibbon<W, T> {
         assert!(builder.universe_size == 0 || builder.universe_size == builder.items.len());
+        // An exact filter refines an approximate filter, so it has to agree with it about
+        // which blocks are inverted.
+        let inverted = match builder.filter {
+            Some(filter) => filter.block_is_inverted(&builder.id),
+            None => builder.inverted,
+        };
         if let Some(filter) = builder.filter {
             if filter.block_is_empty(&builder.id) {
                 // The approximate filter is empty, so it gives a definitive result on every
                 // item and there's nothing to encode in the exact filter.
-                return ExactRibbon::new(&builder.id, 0, filter.block_is_inverted(&builder.id));
+                return ExactRibbon::new(&builder.id, 0, inverted);
             }
         }
-        let mut out = ExactRibbon::new(&builder.id, builder.items.len(), builder.inverted);
+        let mut out = ExactRibbon::new(&builder.id, builder.items.len(), inverted);
         // By inserting the included items first, we ensure that any exceptions that occur during
-        // insertion are for excluded items.
+        // insertion are for excluded items. In an inverted block the roles are swapped: the
+        // items that queries should return 1 for are the excluded ones.
         let mut excluded = vec![];
         for item in builder.items.drain(..) {
-            if item.included() {
+            if item.included() ^ inverted {
                 out.insert(item);
             } else {
                 excluded.push(item);
@@ -228,7 +249,9 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
     /// Hash the item to an Equation and insert it into the system.
     fn insert(&mut self, item: T) -> bool {
         let mut eq = item.as_query(self.m);
-        eq.b = if item.included() { 0 } else { 1 };
+        // An inverted ribbon encodes U \ R, so included and excluded swap roles.
+        let included = item.included() ^ self.inverted;
+        eq.b = if included { 0 } else { 1 };
         assert!(eq.is_zero() || eq.a[0] & 1 == 1);
         let rv = self.insert_equation(eq);
         if !rv {
@@ -340,31 +363,45 @@ impl<const W: usize, T: Filterable<W>, Approximate> PartitionedRibbonFilter<W, T
     }
 
     /// Check if this filter contains the given item in the given block.
+    ///
+    /// Insertions are pruned with `contains_before_inversion`, so this is only used to
+    /// state the filter's semantics in tests.
+    #[cfg(test)]
     fn contains(&self, item: &T) -> bool {
         let Some(entry) = self.index.get(item.block()) else {
             return false;
         };
-        let result = (|| {
-            // Empty blocks do not contain anything,
-            // despite having inner product 0 with everything.
-            if entry.m == 0 {
+        self.eval_block(entry, item) ^ entry.inverted
+    }
+
+    /// As `contains`, but without applying the block's inversion. This is the value that
+    /// the block's linear system encodes for `item`.
+    fn contains_before_inversion(&self, item: &T) -> bool {
+        let Some(entry) = self.index.get(item.block()) else {
+            return false;
+        };
+        self.eval_block(entry, item)
+    }
+
+    fn eval_block(&self, entry: &PartitionedRibbonFilterIndexEntry, item: &T) -> bool {
+        // Empty blocks do not contain anything,
+        // despite having inner product 0 with everything.
+        if entry.m == 0 {
+            return false;
+        }
+        let mut eq = item.as_query(entry.m);
+        eq.s += entry.offset;
+        for i in 0..entry.rank {
+            if eq.eval(&self.solution[i]) != 0 {
                 return false;
             }
-            let mut eq = item.as_query(entry.m);
-            eq.s += entry.offset;
-            for i in 0..entry.rank {
-                if eq.eval(&self.solution[i]) != 0 {
-                    return false;
-                }
+        }
+        for exception in &entry.exceptions {
+            if exception == item.discriminant() {
+                return false;
             }
-            for exception in &entry.exceptions {
-                if exception == item.discriminant() {
-                    return false;
-                }
-            }
-            true
-        })();
-        result ^ entry.inverted
+        }
+        true
     }
 }
 
@@ -674,6 +711,52 @@ mod tests {
         }
         assert!(exact_filter.solution.len() == 1);
         assert!(exact_filter.solution[0].len() == 0);
+    }
+
+    // Construct an aligned equation with a distinct `a` value (hence a distinct
+    // discriminant) for each i.
+    fn item<const W: usize>(i: usize, included: bool) -> Equation<W> {
+        let mut a = [0u64; W];
+        a[0] = ((i as u64) << 1) | 1;
+        Equation::inhomogeneous(i, a, u8::from(!included))
+    }
+
+    #[test]
+    fn test_inverted_block() {
+        // A block that encodes 3/4 of its universe is encoded by inserting the other 1/4
+        // and setting the inverted flag.
+        let n = 1024;
+        let included = |i: usize| i % 4 != 0;
+
+        let mut clubcard_builder = ClubcardBuilder::<1, Equation<1>>::new();
+
+        let mut approx_builder = clubcard_builder.new_approx_builder(&[]);
+        approx_builder.set_universe_size(n);
+        approx_builder.set_inverted(true);
+        for i in (0..n).filter(|i| !included(*i)) {
+            approx_builder.insert(item(i, false));
+        }
+        let approx_ribbon = ApproximateRibbon::from(approx_builder);
+        // Encoding the complement is what gives this block a nonzero rank. Encoding R
+        // directly would give rank 0, i.e. an approximate filter that rules nothing out.
+        assert!(approx_ribbon.rank > 0);
+        clubcard_builder.collect_approx_ribbons(vec![approx_ribbon]);
+
+        // The exact filter is built from the whole universe, with each item's true
+        // status, exactly as it would be for a non-inverted block.
+        let mut exact_builder = clubcard_builder.new_exact_builder(&[]);
+        for i in 0..n {
+            exact_builder.insert(item(i, included(i)));
+        }
+        let exact_ribbon = ExactRibbon::from(exact_builder);
+        assert!(exact_ribbon.inverted);
+        clubcard_builder.collect_exact_ribbons(vec![exact_ribbon]);
+
+        let clubcard = clubcard_builder.build::<Equation<1>>((), ());
+        assert!(clubcard.index[&vec![]].inverted);
+        for i in 0..n {
+            assert!(clubcard.unchecked_contains(&item::<1>(i, included(i))) == included(i));
+        }
     }
 
     #[test]

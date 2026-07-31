@@ -16,3 +16,7 @@ sha2 = "0.10"
 
 [features]
 builder = ["dep:rand"]
+
+[[example]]
+name = "uint_no_partition"
+required-features = ["builder"]
