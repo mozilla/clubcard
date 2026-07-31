@@ -97,6 +97,17 @@ impl<'a, const W: usize, T: Filterable<W>> From<RibbonBuilder<'a, W, T>>
     /// The size of this ribbon is proportional to r|R|.
     fn from(mut builder: RibbonBuilder<'a, W, T>) -> ApproximateRibbon<W, T> {
         assert!(builder.items.len() <= builder.universe_size);
+        // An approximate ribbon encodes a homogeneous system, so every inserted item has to
+        // belong to the set that the ribbon encodes: R, or U \ R if the block is inverted.
+        // An item on the wrong side of this is not necessarily an insertion failure, so the
+        // exceptions check below would not reliably catch it.
+        assert!(
+            builder
+                .items
+                .iter()
+                .all(|item| item.included() ^ builder.inverted),
+            "an item queued for an inverted ribbon is not in U \\ R (or vice versa)"
+        );
         if builder.items.len() == builder.universe_size {
             ApproximateRibbon::new(&builder.id, 0, builder.universe_size, !builder.inverted)
         } else {
@@ -757,6 +768,22 @@ mod tests {
         for i in 0..n {
             assert!(clubcard.unchecked_contains(&item::<1>(i, included(i))) == included(i));
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "inverted")]
+    fn test_inverted_ribbon_rejects_item_outside_encoded_set() {
+        // A caller that sets the inverted flag must insert the elements of U \ R. Inserting
+        // an element of R would silently bloat the ribbon.
+        let n = 1024;
+        let mut builder = RibbonBuilder::<1, Equation<1>>::new(&[], None);
+        builder.set_universe_size(n);
+        builder.set_inverted(true);
+        for i in 0usize..256 {
+            builder.insert(item(i, false));
+        }
+        builder.insert(item(256, true));
+        let _ = ApproximateRibbon::from(builder);
     }
 
     #[test]
