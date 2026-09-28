@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use clubcard::builder::{ApproximateRibbon, ClubcardBuilder, ExactRibbon};
 /// Compress a set of u32 integers and output the (approximate) size of compressed bytes.
 /// # Arguments
 ///
@@ -20,14 +21,12 @@
 /// cargo run --features builder --example uint_no_partition
 /// ```
 ///
-
 use clubcard::*;
 use sha2::{Digest, Sha256};
 use std::cmp::max;
 use std::collections::HashSet;
-use std::{env, fs, io, process};
 use std::io::BufRead;
-use clubcard::builder::{ApproximateRibbon, ClubcardBuilder, ExactRibbon};
+use std::{env, fs, io, process};
 
 struct Universe {
     bound: u32,
@@ -36,7 +35,7 @@ const W: usize = 4;
 const BLOCK: [u8; 0] = [];
 
 struct Int {
-    val: [u8; 4], // u32
+    val: [u8; 4],   // u32
     included: bool, // whether it's in the subset
 }
 
@@ -114,7 +113,10 @@ fn parse_args() -> (u32, HashSet<u32>) {
     let mut max_val = 0;
 
     while let Some(Ok(line)) = lines.next() {
-        let number = line.trim().parse::<u32>().expect("Failed to parse 32-bit integer");
+        let number = line
+            .trim()
+            .parse::<u32>()
+            .expect("Failed to parse 32-bit integer");
         if number > max_val {
             max_val = number;
         }
@@ -147,11 +149,17 @@ fn main() {
     clubcard_builder.collect_exact_ribbons(vec![ExactRibbon::from(exact_builder)]);
 
     let clubcard = clubcard_builder.build::<Int>(
-        Universe { bound: universe_size },
+        Universe {
+            bound: universe_size,
+        },
         (),
     );
 
     println!("Generated {}", clubcard);
-    println!("The size of compressed set (of {} elements) with max value {} is {} bytes.",
-             numbers.len(), universe_size - 1, clubcard.approximate_size_of());
+    println!(
+        "The size of compressed set (of {} elements) with max value {} is {} bytes.",
+        numbers.len(),
+        universe_size - 1,
+        clubcard.approximate_size_of()
+    );
 }
