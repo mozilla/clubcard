@@ -5,7 +5,7 @@
 use crate::{
     clubcard::ClubcardIndex, Clubcard, ClubcardIndexEntry, Equation, Filterable, Queryable,
 };
-use rand::{thread_rng, Rng};
+use rand::{rng, RngExt};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -315,7 +315,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> Ribbon<W, T, ApproxOrExact
                 // TODO: We want multiple calls to solve() to give a different
                 // solutions (when the system is suitably under-determined),
                 // but it might be nice if this was deterministic.
-                thread_rng().gen::<u8>()
+                rng().random::<u8>()
             } else {
                 // Let z' be the vector we get by setting bit i of z to z'_i.
                 // Since z_i is zero, and row i has a one in column i, we have
@@ -442,7 +442,7 @@ impl<const W: usize, T: Filterable<W>, ApproxOrExact> From<Vec<Ribbon<W, T, Appr
             let mut tail = vec![];
             if max_rank > 1 {
                 // randomizing the tail increases the odds that the solutions will be distinct
-                tail.push(thread_rng().gen::<u64>());
+                tail.push(rng().random::<u64>());
             }
             for j in (0..blocks.len()).rev() {
                 if blocks[j].rank > i {
@@ -578,8 +578,8 @@ impl<const W: usize, T: Filterable<W>> ClubcardBuilder<W, T> {
 mod tests {
     use crate::builder::*;
     use crate::*;
-    use rand::distributions::{Distribution, Uniform};
-    use rand::Rng;
+    use rand::distr::{Distribution, Uniform};
+    use rand::{Rng, RngExt};
 
     // Construct the equation a(x) = x_i
     fn std_eq<const W: usize>(i: usize) -> Equation<W> {
@@ -590,14 +590,14 @@ mod tests {
 
     // Construct an random aligned equation using the given distribution for s.
     fn rand<const W: usize>(s_dist: &impl Distribution<usize>) -> Equation<W> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let s = s_dist.sample(&mut rng);
         let mut a = [0u64; W];
         for a_i in a.iter_mut() {
-            *a_i = rng.gen();
+            *a_i = rng.next_u64();
         }
         a[0] |= 1;
-        Equation::inhomogeneous(s, a, rng.gen::<u8>() & 1)
+        Equation::inhomogeneous(s, a, rng.random::<u8>() & 1)
     }
 
     impl<const W: usize> AsQuery<W> for Equation<W> {
@@ -658,7 +658,7 @@ mod tests {
         let n = 1024;
         const W: usize = 2;
         let mut r = Ribbon::<W, Equation<W>, Exact>::new(&[0], n, false);
-        let mut s_dist = Uniform::new(0, r.m);
+        let mut s_dist = Uniform::new(0, r.m).unwrap();
         let mut eqs = Vec::with_capacity(n);
         for _ in 0..n {
             let eq = rand(&mut s_dist);
